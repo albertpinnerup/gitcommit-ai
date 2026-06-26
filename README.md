@@ -29,8 +29,28 @@ commit --help
 While Claude plans the commits, a live status bar (spinner + elapsed seconds)
 animates on stderr — shown only on a TTY, so piping stays clean.
 
-At the review gate: `a` approve all, `e <n>` edit a message, `s <n>` skip a
-commit, `q` quit without committing.
+### Review gate
+
+On a terminal, the proposed commits open in an interactive picker. The focused
+commit is highlighted; move between them and accept them one at a time:
+
+```
+   feat: add greeting
+     files: hello.txt
+❯  docs: update readme
+     files: readme.md
+
+↑/↓ move · enter accept · a accept all · s skip · e edit · q quit
+```
+
+- `↑`/`↓` (or `k`/`j`) — move focus
+- `enter` — commit the focused commit now, then continue with the rest
+- `a` — accept and commit all remaining
+- `s` — skip (drop the focused commit without committing)
+- `e` — edit the focused commit's subject
+- `q` / `Ctrl-C` — quit (commits already made stay)
+
+When stdin is piped (not a TTY), it falls back to a simple line-based prompt.
 
 ## What it does and doesn't do
 

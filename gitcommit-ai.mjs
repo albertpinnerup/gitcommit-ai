@@ -276,24 +276,175 @@ export async function reviewGate(plan, { input, output, autoYes } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// interactive review (arrow navigation, per-commit accept)
+// ---------------------------------------------------------------------------
+
+// decodeKeys(str) -> normalized key tokens. Pure, so it is unit-testable without
+// a terminal. Handles CSI arrow sequences, enter, ctrl-c, and plain characters.
+export function decodeKeys(s) {
+  const keys = [];
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\x1b' && s[i + 1] === '[') {
+      const c = s[i + 2];
+      if (c === 'A') keys.push('up');
+      else if (c === 'B') keys.push('down');
+      else if (c === 'C') keys.push('right');
+      else if (c === 'D') keys.push('left');
+      i += 2;
+      continue;
+    }
+    const ch = s[i];
+    if (ch === '\r' || ch === '\n') keys.push('enter');
+    else if (ch === '\x03') keys.push('ctrl-c');
+    else keys.push(ch);
+  }
+  return keys;
+}
+
+const LEGEND = '↑/↓ move · enter accept · a accept all · s skip · e edit · q quit';
+
+// renderReview(state, {color}) -> the full panel text (no cursor moves). state is
+// { commits, cursor, committed }. The focused commit gets a marker + inverse video.
+export function renderReview({ commits, cursor, committed }, { color = true } = {}) {
+  const inv = color ? (s) => `\x1b[7m${s}\x1b[0m` : (s) => s;
+  const dim = color ? (s) => `\x1b[2m${s}\x1b[0m` : (s) => s;
+  const accent = color ? (s) => `\x1b[36m${s}\x1b[0m` : (s) => s;
+  const lines = [];
+  if (committed.length) {
+    lines.push(dim(`✓ committed ${committed.length}: ${committed.map((c) => c.subject).join(', ')}`));
+  }
+  commits.forEach((c, i) => {
+    const focused = i === cursor;
+    const head = formatCommitMessage(c).split('\n')[0];
+    const marker = focused ? accent('❯ ') : '  ';
+    lines.push(marker + (focused ? inv(` ${head} `) : ` ${head} `));
+    lines.push('     ' + dim('files: ' + c.files.join(', ')));
+  });
+  lines.push('');
+  lines.push(dim(LEGEND));
+  return lines.join('\n');
+}
+
+// interactiveReview(plan, {nextKey, readLine, output, runGit, color}) drives the
+// arrow-key gate. nextKey()/readLine() are injectable so the loop is testable
+// without raw-mode stdin. Commits happen incrementally via executeOne.
+export async function interactiveReview(plan, {
+  nextKey, readLine, output, runGit: git = runGit, color = true,
+} = {}) {
+  const out = output ?? process.stdout;
+  let commits = plan.commits.slice();
+  let cursor = 0;
+  const committed = [];
+  let prevLines = 0;
+
+  const draw = () => {
+    const text = renderReview({ commits, cursor, committed }, { color });
+    if (prevLines > 0) out.write(`\x1b[${prevLines}A\x1b[0J`);
+    out.write(text + '\n');
+    prevLines = text.split('\n').length;
+  };
+
+  const commitAt = (i) => {
+    committed.push(executeOne(commits[i], { runGit: git }));
+    commits.splice(i, 1);
+    if (cursor >= commits.length) cursor = Math.max(0, commits.length - 1);
+  };
+
+  draw();
+  while (commits.length > 0) {
+    const key = await nextKey();
+    const n = commits.length;
+    try {
+      if (key === 'up' || key === 'k') cursor = (cursor - 1 + n) % n;
+      else if (key === 'down' || key === 'j') cursor = (cursor + 1) % n;
+      else if (key === 'q' || key === 'ctrl-c') break;
+      else if (key === 's') {
+        commits.splice(cursor, 1);
+        if (cursor >= commits.length) cursor = Math.max(0, commits.length - 1);
+      } else if (key === 'e') {
+        const subject = ((await readLine('  new subject: ')) || '').trim();
+        if (subject) commits[cursor] = { ...commits[cursor], subject };
+      } else if (key === 'enter') {
+        commitAt(cursor);
+      } else if (key === 'a') {
+        while (commits.length) commitAt(0);
+      }
+    } catch (e) {
+      out.write(`\nerror: ${e.message}\n`);
+      break;
+    }
+    draw();
+  }
+  return { committed };
+}
+
+// makeRawKeyDriver(input, output) -> {nextKey, readLine, close} backed by a real
+// raw-mode TTY. Kept thin; the testable logic lives in decodeKeys/interactiveReview.
+function makeRawKeyDriver(input = process.stdin, output = process.stdout) {
+  const wasRaw = !!input.isRaw;
+  if (input.setRawMode) input.setRawMode(true);
+  input.resume();
+  input.setEncoding('utf8');
+
+  const queue = [];
+  const waiters = [];
+  const onData = (chunk) => {
+    for (const key of decodeKeys(chunk)) {
+      if (waiters.length) waiters.shift()(key);
+      else queue.push(key);
+    }
+  };
+  input.on('data', onData);
+
+  const nextKey = () => new Promise((res) => {
+    if (queue.length) res(queue.shift());
+    else waiters.push(res);
+  });
+
+  const readLine = (promptText) => new Promise((res) => {
+    input.removeListener('data', onData);
+    if (input.setRawMode) input.setRawMode(false);
+    const rl = createInterface({ input, output });
+    rl.question(promptText, (ans) => {
+      rl.close();
+      if (input.setRawMode) input.setRawMode(true);
+      input.on('data', onData);
+      res(ans);
+    });
+  });
+
+  const close = () => {
+    input.removeListener('data', onData);
+    if (input.setRawMode) input.setRawMode(wasRaw);
+    input.pause();
+  };
+
+  return { nextKey, readLine, close };
+}
+
+// ---------------------------------------------------------------------------
 // execution
 // ---------------------------------------------------------------------------
 
+// executeOne(commit, {runGit}) -> {subject, files}. Stages exactly this commit's
+// files (after clearing the index) and commits them. Throws on any git failure.
+export function executeOne(commit, { runGit: git = runGit } = {}) {
+  const reset = git(['reset', '-q']);
+  if (reset.status !== 0) throw new Error(`git reset failed: ${reset.stderr}`);
+  const add = git(['add', '--', ...commit.files]);
+  if (add.status !== 0) throw new Error(`git add failed: ${add.stderr}`);
+  const msg = formatCommitMessage(commit);
+  const [subject, ...bodyParts] = msg.split('\n\n');
+  const args = ['commit', '-m', subject];
+  if (bodyParts.length) args.push('-m', bodyParts.join('\n\n'));
+  const commit_ = git(args);
+  if (commit_.status !== 0) throw new Error(`git commit failed: ${commit_.stderr}`);
+  return { subject: commit.subject, files: commit.files };
+}
+
 export function execute(plan, { runGit: git = runGit } = {}) {
   const committed = [];
-  for (const c of plan.commits) {
-    const reset = git(['reset', '-q']);
-    if (reset.status !== 0) throw new Error(`git reset failed: ${reset.stderr}`);
-    const add = git(['add', '--', ...c.files]);
-    if (add.status !== 0) throw new Error(`git add failed: ${add.stderr}`);
-    const msg = formatCommitMessage(c);
-    const [subject, ...bodyParts] = msg.split('\n\n');
-    const args = ['commit', '-m', subject];
-    if (bodyParts.length) args.push('-m', bodyParts.join('\n\n'));
-    const commit = git(args);
-    if (commit.status !== 0) throw new Error(`git commit failed: ${commit.stderr}`);
-    committed.push({ subject: c.subject, files: c.files });
-  }
+  for (const c of plan.commits) committed.push(executeOne(c, { runGit: git }));
   return { committed };
 }
 
@@ -332,17 +483,36 @@ export async function main(argv, deps = {}) {
       return 0;
     }
 
-    let input = deps.input;
-    let rl;
-    if (!input && !args.yes) {
-      rl = createInterface({ input: process.stdin, output: process.stdout });
-      input = () => new Promise((res) => rl.question('', res));
+    let committed;
+    if (args.yes) {
+      committed = execute(plan, { runGit: git }).committed;
+    } else if (deps.nextKey || (process.stdin.isTTY && deps.input === undefined)) {
+      // Interactive arrow-key gate (real TTY, or injected keys for tests).
+      const driver = deps.nextKey
+        ? { nextKey: deps.nextKey, readLine: deps.readLine ?? (async () => ''), close: () => {} }
+        : makeRawKeyDriver(process.stdin, process.stdout);
+      try {
+        committed = (await interactiveReview(plan, {
+          nextKey: driver.nextKey, readLine: driver.readLine,
+          output: out, runGit: git, color: !process.env.NO_COLOR,
+        })).committed;
+      } finally {
+        driver.close();
+      }
+    } else {
+      // Line-based fallback for piped / non-TTY input.
+      let input = deps.input, rl;
+      if (!input) {
+        rl = createInterface({ input: process.stdin, output: process.stdout });
+        input = () => new Promise((res) => rl.question('', res));
+      }
+      const approved = await reviewGate(plan, { input, output: out });
+      if (rl) rl.close();
+      if (!approved) { out.write('aborted — nothing committed\n'); return 1; }
+      committed = execute(approved, { runGit: git }).committed;
     }
-    const approved = await reviewGate(plan, { input, output: out, autoYes: args.yes });
-    if (rl) rl.close();
-    if (!approved) { out.write('aborted — nothing committed\n'); return 1; }
 
-    const { committed } = execute(approved, { runGit: git });
+    if (!committed.length) { out.write('\nnothing committed\n'); return 1; }
     out.write(`\nCreated ${committed.length} commit(s):\n` +
       committed.map((c) => `  • ${c.subject}`).join('\n') + '\n');
     return 0;

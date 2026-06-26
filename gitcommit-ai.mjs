@@ -2,6 +2,8 @@
 
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // arg parsing
@@ -307,6 +309,17 @@ export async function main(argv, deps = {}) {
 }
 
 // Run main() only when invoked as a script, not when imported by tests.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+// Resolve the real path of argv[1] so invocation through a symlink (e.g. a
+// `commit` symlink on PATH) still matches this module's file URL.
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   main(process.argv.slice(2)).then((code) => process.exit(code));
 }

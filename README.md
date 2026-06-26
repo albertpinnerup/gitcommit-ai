@@ -26,6 +26,9 @@ commit --yes      # skip the review gate and commit the proposed plan
 commit --help
 ```
 
+While Claude plans the commits, a live status bar (spinner + elapsed seconds)
+animates on stderr — shown only on a TTY, so piping stays clean.
+
 At the review gate: `a` approve all, `e <n>` edit a message, `s <n>` skip a
 commit, `q` quit without committing.
 

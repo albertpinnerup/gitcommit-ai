@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFile } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -179,17 +179,60 @@ export function collect({ runGit: git = runGit } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// status bar (spinner + elapsed + label on stderr, TTY only)
+// ---------------------------------------------------------------------------
+
+export const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+// statusLine(frame, elapsedSeconds, label) -> the visible status text (no CR/clear).
+export function statusLine(frame, elapsed, label) {
+  return `  ${frame}  commit · ${elapsed}s · ${label || 'working…'}`;
+}
+
+// withStatus(label, fn, {stream}) -> runs the async fn while animating a status
+// line on `stream` (default stderr). Only animates on a TTY; always clears the
+// line when fn settles, success or failure. fn must be non-blocking (await-able)
+// for the spinner to tick.
+export async function withStatus(label, fn, { stream = process.stderr } = {}) {
+  const show = !!stream.isTTY;
+  const start = Date.now();
+  let fi = 0, ticker;
+  if (show) {
+    ticker = setInterval(() => {
+      fi = (fi + 1) % FRAMES.length;
+      const el = Math.floor((Date.now() - start) / 1000);
+      const spin = `\x1b[36m${FRAMES[fi]}\x1b[0m`;
+      stream.write('\r\x1b[2K' + statusLine(spin, el, label));
+    }, 80);
+    if (typeof ticker.unref === 'function') ticker.unref();
+  }
+  try {
+    return await fn();
+  } finally {
+    if (show) { clearInterval(ticker); stream.write('\r\x1b[2K'); }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // claude invocation
 // ---------------------------------------------------------------------------
 
-export function callClaude(prompt, { runner } = {}) {
-  const run = runner ?? ((p) => {
-    const r = spawnSync('claude', ['-p', p, '--output-format', 'json'], { encoding: 'utf8' });
-    return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+function defaultClaudeRunner(prompt) {
+  return new Promise((resolve) => {
+    execFile('claude', ['-p', prompt, '--output-format', 'json'],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        const status = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
+        resolve({ status, stdout: stdout ?? '', stderr: stderr ?? '' });
+      });
   });
-  const res = run(prompt);
+}
+
+export async function callClaude(prompt, { runner } = {}) {
+  const run = runner ?? defaultClaudeRunner;
+  const res = await run(prompt);
   if (res.status !== 0) {
-    throw new Error(`claude CLI failed: ${res.stderr.trim() || 'unknown error'}`);
+    throw new Error(`claude CLI failed: ${(res.stderr || '').trim() || 'unknown error'}`);
   }
   try {
     const wrapper = JSON.parse(res.stdout);
@@ -273,13 +316,14 @@ export async function main(argv, deps = {}) {
   const doCollect = deps.collect ?? collect;
   const doClaude = deps.callClaude ?? ((prompt) => callClaude(prompt));
   const git = deps.runGit ?? runGit;
+  const statusStream = deps.statusStream ?? process.stderr;
 
   try {
     const { diff, files, log } = doCollect(deps.runGit ? { runGit: git } : undefined);
     if (files.length === 0) { out.write('nothing to commit (tracked changes only)\n'); return 0; }
 
     const prompt = buildPrompt({ diff, files, log });
-    const raw = doClaude(prompt);
+    const raw = await withStatus('planning commits', () => doClaude(prompt), { stream: statusStream });
     const plan = parsePlan(raw, files.map((f) => f.path));
 
     out.write(renderPlan(plan) + '\n');

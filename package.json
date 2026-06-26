@@ -1,0 +1,7 @@
+{
+  "name": "gitcommit-ai",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "commit": "./gitcommit-ai.mjs" },
+  "scripts": { "test": "node --test" }
+}

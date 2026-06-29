@@ -7,9 +7,10 @@ const FAKE_COLLECT = () => ({ diff: 'd', files: [{ status: 'M', path: 'a.js' }],
 const FAKE_CLAUDE = () => JSON.stringify({ commits: [{ files: ['a.js'], type: 'feat', subject: 'add a' }] });
 
 test('parseArgs reads flags', () => {
-  assert.deepEqual(parseArgs([]), { dryRun: false, yes: false, help: false, verbose: false, model: null });
-  assert.deepEqual(parseArgs(['--dry-run']), { dryRun: true, yes: false, help: false, verbose: false, model: null });
-  assert.deepEqual(parseArgs(['--yes']), { dryRun: false, yes: true, help: false, verbose: false, model: null });
+  assert.deepEqual(parseArgs([]), { dryRun: false, apply: false, help: false, verbose: false, model: null });
+  assert.deepEqual(parseArgs(['--dry-run']), { dryRun: true, apply: false, help: false, verbose: false, model: null });
+  assert.deepEqual(parseArgs(['--apply']), { dryRun: false, apply: true, help: false, verbose: false, model: null });
+  assert.equal(parseArgs(['-a']).apply, true);
   assert.equal(parseArgs(['-h']).help, true);
   assert.equal(parseArgs(['--help']).help, true);
   assert.equal(parseArgs(['--model', 'haiku']).model, 'haiku');
@@ -52,11 +53,11 @@ test('main with no changes prints nothing to commit', async () => {
   assert.match(out.text(), /nothing to commit/i);
 });
 
-test('main --yes runs execute via injected runGit', async () => {
+test('main --apply runs execute via injected runGit', async () => {
   const out = sink();
   const calls = [];
   const runGit = (args) => { calls.push(args[0]); return { status: 0, stdout: '', stderr: '' }; };
-  const code = await main(['--yes'], { collect: FAKE_COLLECT, callClaude: FAKE_CLAUDE, output: out, runGit });
+  const code = await main(['--apply'], { collect: FAKE_COLLECT, callClaude: FAKE_CLAUDE, output: out, runGit });
   assert.equal(code, 0);
   assert.ok(calls.includes('commit'));
 });

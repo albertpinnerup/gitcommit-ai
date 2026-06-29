@@ -42,7 +42,7 @@ test('reviewGate edit replaces a subject', async () => {
   assert.equal(result.commits[0].subject, 'renamed subject');
 });
 
-test('reviewGate autoYes returns plan without input', async () => {
-  const result = await reviewGate(PLAN, { autoYes: true, output: sink() });
+test('reviewGate autoApply returns plan without input', async () => {
+  const result = await reviewGate(PLAN, { autoApply: true, output: sink() });
   assert.deepEqual(result, PLAN);
 });

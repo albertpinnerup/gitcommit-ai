@@ -7,11 +7,14 @@ const FAKE_COLLECT = () => ({ diff: 'd', files: [{ status: 'M', path: 'a.js' }],
 const FAKE_CLAUDE = () => JSON.stringify({ commits: [{ files: ['a.js'], type: 'feat', subject: 'add a' }] });
 
 test('parseArgs reads flags', () => {
-  assert.deepEqual(parseArgs([]), { dryRun: false, yes: false, help: false });
-  assert.deepEqual(parseArgs(['--dry-run']), { dryRun: true, yes: false, help: false });
-  assert.deepEqual(parseArgs(['--yes']), { dryRun: false, yes: true, help: false });
+  assert.deepEqual(parseArgs([]), { dryRun: false, yes: false, help: false, body: false, model: null });
+  assert.deepEqual(parseArgs(['--dry-run']), { dryRun: true, yes: false, help: false, body: false, model: null });
+  assert.deepEqual(parseArgs(['--yes']), { dryRun: false, yes: true, help: false, body: false, model: null });
   assert.equal(parseArgs(['-h']).help, true);
   assert.equal(parseArgs(['--help']).help, true);
+  assert.equal(parseArgs(['--model', 'haiku']).model, 'haiku');
+  assert.equal(parseArgs(['--body']).body, true);
+  assert.equal(parseArgs([]).model, null);
 });
 
 test('main --help prints usage', async () => {
@@ -31,6 +34,13 @@ test('main --dry-run prints plan and does not execute', async () => {
   assert.equal(code, 0);
   assert.match(out.text(), /feat: add a/);
   assert.equal(executed, false);
+});
+
+test('main prints a timing readout on a TTY status stream', async () => {
+  const out = sink();
+  const status = { isTTY: true, lines: [], write(s) { this.lines.push(s); } };
+  await main(['--dry-run'], { collect: FAKE_COLLECT, callClaude: FAKE_CLAUDE, output: out, statusStream: status });
+  assert.match(status.lines.join(''), /planned 1 commit in \d+\.\d+s/);
 });
 
 test('main with no changes prints nothing to commit', async () => {

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   decodeKeys, editorReduce, renderReview, interactiveReview, executeOne,
-  settingsReduce, renderSettings,
+  settingsReduce, renderSettings, fileSelectReduce, renderFileSelect,
 } from '../gitcommit-ai.mjs';
 
 const PLAN = { commits: [
@@ -262,6 +262,61 @@ test('renderReview shows current settings when provided', () => {
     { color: false, settings: { model: 'opus', effort: 'low', verbose: true } },
   );
   assert.match(text, /settings: opus · low · verbose/);
+});
+
+// ---- file multi-select + add-your-own / instruct-claude ---------------------
+
+test('fileSelectReduce toggles, navigates, and confirms the checked paths', () => {
+  let s = { items: [{ path: 'a', on: true }, { path: 'b', on: false }], cursor: 0 };
+  s = fileSelectReduce(s, 'down').state;            // focus b
+  s = fileSelectReduce(s, ' ').state;               // toggle b on
+  assert.deepEqual(fileSelectReduce(s, 'enter'), { done: true, selected: ['a', 'b'] });
+  assert.deepEqual(fileSelectReduce(s, 'escape'), { done: true, cancelled: true });
+});
+
+test('renderFileSelect shows checkboxes and a hint', () => {
+  const text = renderFileSelect({ items: [{ path: 'a.js', on: true }, { path: 'b.js', on: false }], cursor: 0 }, { color: false });
+  assert.match(text, /\[x\] a\.js/);
+  assert.match(text, /\[ \] b\.js/);
+  assert.match(text, /space toggle/);
+});
+
+test('interactiveReview: n builds your own commit, moving files and dropping empties', async () => {
+  const { runGit, subjects } = fakeGit();
+  // start focused on commit 1 (a.js). open n -> b.js is also offered; toggle it on
+  // (down to b, space), confirm (enter), type a message, then accept all.
+  const readLine = async () => 'chore: my own grouping';
+  // file-select: cursor starts at 0 (a.js, on). down->b.js, space toggle on, enter.
+  const seq = ['n', 'down', ' ', 'enter', /* message editor */ 'a'];
+  let i = 0;
+  const nextKey = async () => (i < seq.length ? seq[i++] : 'q');
+  const res = await interactiveReview(
+    { commits: [
+      { files: ['a.js'], type: 'feat', subject: 'one' },
+      { files: ['b.js'], type: 'fix', subject: 'two' },
+    ]},
+    { nextKey, readLine, output: sink(), runGit },
+  );
+  // both files now in a single hand-written commit; the two originals are gone
+  assert.deepEqual(subjects, ['chore: my own grouping']);
+  assert.equal(res.committed.length, 1);
+  assert.deepEqual(res.committed[0].files, ['a.js', 'b.js']);
+});
+
+test('interactiveReview: p re-plans with the typed instruction', async () => {
+  const { runGit, subjects } = fakeGit();
+  let seenInstruction;
+  const replan = async (_settings, instruction) => {
+    seenInstruction = instruction;
+    return { commits: [{ files: ['a.js', 'b.js'], type: 'refactor', subject: 'regrouped per request' }] };
+  };
+  const readLine = async () => 'merge everything into one commit';
+  await interactiveReview(
+    { commits: [{ files: ['a.js'], type: 'feat', subject: 'x' }, { files: ['b.js'], type: 'fix', subject: 'y' }] },
+    { nextKey: keys(['p', 'a']), readLine, output: sink(), runGit, replan },
+  );
+  assert.equal(seenInstruction, 'merge everything into one commit');
+  assert.deepEqual(subjects, ['refactor: regrouped per request']);
 });
 
 // ---- regeneration -----------------------------------------------------------

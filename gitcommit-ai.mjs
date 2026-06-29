@@ -164,6 +164,7 @@ export function buildPrompt({
   log,
   allowBody = false,
   maxDiffChars = 12000,
+  instruction,
 }) {
   const fileList = files.map((f) => `${f.status}\t${f.path}`).join("\n");
   let d = diff;
@@ -178,6 +179,10 @@ export function buildPrompt({
   const shape = allowBody
     ? '{ "files": ["path"], "type": "feat", "scope": "optional", "subject": "...", "body": "..." }'
     : '{ "files": ["path"], "type": "feat", "scope": "optional", "subject": "..." }';
+  const guidance =
+    instruction && instruction.trim()
+      ? `\n- IMPORTANT — follow this user instruction about grouping/wording: ${instruction.trim()}`
+      : "";
   return `You are a git commit planner. Group the following CHANGED FILES into one or
 more logical commits and write a Conventional Commits message for each.
 
@@ -187,7 +192,7 @@ Rules:
   style, refactor, perf, test, build, ci, chore, revert. Keep subject <= 72 chars,
   imperative mood, no trailing period.
 - Order commits so prerequisite changes come first.
-${bodyRule}
+${bodyRule}${guidance}
 
 Respond with ONLY a JSON object of this exact shape (the example is pretty-printed
 for readability — your output must be MINIFIED on a single line, no markdown, no
@@ -572,8 +577,48 @@ export function renderSettings({ settings, cursor }, { color = true } = {}) {
   return lines.join("\n");
 }
 
-const LEGEND =
-  "↑/↓ move · enter accept · a all · e msg · E body · s skip · r regen all · R regen one · c settings · q quit";
+// fileSelectReduce(state, key) -> { state } | { done, selected } | { done,
+// cancelled }. Pure multi-select over state { items: [{path, on}], cursor }.
+// space toggles, enter confirms (returns the checked paths), esc/ctrl-c cancel.
+export function fileSelectReduce({ items, cursor }, key) {
+  const n = items.length;
+  if (key === "escape" || key === "ctrl-c") return { done: true, cancelled: true };
+  if (key === "enter")
+    return { done: true, selected: items.filter((it) => it.on).map((it) => it.path) };
+  if (key === "up" || key === "k")
+    return { state: { items, cursor: (cursor - 1 + n) % n } };
+  if (key === "down" || key === "j")
+    return { state: { items, cursor: (cursor + 1) % n } };
+  if (key === " ")
+    return {
+      state: {
+        items: items.map((it, i) => (i === cursor ? { ...it, on: !it.on } : it)),
+        cursor,
+      },
+    };
+  return { state: { items, cursor } };
+}
+
+// renderFileSelect(state, {color}) -> the file multi-select pane text.
+export function renderFileSelect({ items, cursor }, { color = true } = {}) {
+  const inv = color ? (s) => `\x1b[7m${s}\x1b[0m` : (s) => s;
+  const dim = color ? (s) => `\x1b[2m${s}\x1b[0m` : (s) => s;
+  const accent = color ? (s) => `\x1b[36m${s}\x1b[0m` : (s) => s;
+  const bold = color ? (s) => `\x1b[1m${s}\x1b[0m` : (s) => s;
+  const lines = [bold("Pick files for the new commit"), ""];
+  items.forEach((it, i) => {
+    const focused = i === cursor;
+    const row = `${it.on ? "[x]" : "[ ]"} ${it.path}`;
+    lines.push((focused ? accent("❯ ") : "  ") + (focused ? inv(` ${row} `) : ` ${row} `));
+  });
+  lines.push("");
+  lines.push(dim("↑/↓ move · space toggle · enter confirm · esc cancel"));
+  return lines.join("\n");
+}
+
+const LEGEND_NAV = "↑/↓ move · enter accept · a accept all · s skip · q quit";
+const LEGEND_EDIT =
+  "n new · p ask claude · e msg · E body · r regen all · R regen one · c settings";
 
 // renderReview(state, {color, width, height}) -> the full panel text (no cursor
 // moves). state is { commits, cursor, committed }. The focused commit gets a
@@ -614,7 +659,7 @@ export function renderReview(
       ),
     );
   }
-  const footer = ["", dim(clip(LEGEND))];
+  const footer = ["", dim(clip(LEGEND_NAV)), dim(clip(LEGEND_EDIT))];
 
   // Each block: label row, subject row (highlighted when focused), any body
   // lines (dimmed), then the files row. Body lines make blocks variable-height.
@@ -760,6 +805,64 @@ export async function interactiveReview(
         commitAt(cursor);
       } else if (key === "a") {
         while (commits.length) commitAt(0);
+      } else if (key === "n") {
+        // Add your own commit: pick files (seeded from the focused commit), then
+        // write a message. Chosen files move into the new commit; any commit left
+        // empty is dropped.
+        const focusedFiles = new Set(commits[cursor]?.files ?? []);
+        const allFiles = commits.flatMap((c) => c.files);
+        let fs = {
+          items: allFiles.map((p) => ({ path: p, on: focusedFiles.has(p) })),
+          cursor: 0,
+        };
+        let selected = null;
+        for (;;) {
+          out.write("\x1b[H\x1b[J" + renderFileSelect(fs, { color }) + "\n");
+          const r = fileSelectReduce(fs, await nextKey());
+          if (r.done) {
+            selected = r.cancelled ? null : r.selected;
+            break;
+          }
+          fs = r.state;
+        }
+        if (selected && selected.length) {
+          const seed = commits[cursor]
+            ? formatCommitMessage(commits[cursor]).split("\n")[0]
+            : "";
+          const msg = await edit(
+            "  message for the new commit (enter save · esc cancel): ",
+            seed,
+          );
+          if (msg != null && msg.trim()) {
+            const chosen = new Set(selected);
+            commits = commits
+              .map((c) => ({
+                ...c,
+                files: c.files.filter((f) => !chosen.has(f)),
+              }))
+              .filter((c) => c.files.length > 0);
+            commits.unshift({ files: selected, header: msg.trim() });
+            cursor = 0;
+          }
+        }
+      } else if (key === "p" && replan) {
+        // Tell Claude what to change, then re-plan the whole list honoring it.
+        const instruction = await edit(
+          "  tell Claude what to change (enter · esc cancel): ",
+          "",
+        );
+        if (instruction != null && instruction.trim()) {
+          out.write("\x1b[H\x1b[J");
+          const np = await withStatus(
+            "re-planning with your guidance...",
+            () => replan(conf, instruction.trim()),
+            { stream: out },
+          );
+          if (np && np.commits.length) {
+            commits = np.commits.slice();
+            cursor = 0;
+          }
+        }
       } else if (key === "c") {
         // Settings sub-pane: stage changes; regeneration applies them.
         let st = { settings: conf, cursor: 0 };
@@ -1000,7 +1103,7 @@ export async function main(argv, deps = {}) {
   // Re-plan from scratch with current settings (grouping may change).
   const replan =
     deps.replan ??
-    (async (s) => {
+    (async (s, instruction) => {
       const c = doCollect(collectArg);
       if (!c.files.length) return null;
       const p = buildPrompt({
@@ -1008,6 +1111,7 @@ export async function main(argv, deps = {}) {
         files: c.files,
         log: c.log,
         allowBody: s.verbose,
+        instruction,
       });
       return parsePlan(
         await planWith(p, s),

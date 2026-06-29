@@ -17,6 +17,12 @@ test('buildRewritePrompt asks for a body when verbose', () => {
   assert.match(p, /Include a short body/i);
 });
 
+test('buildPrompt embeds a user instruction when given', () => {
+  const base = { diff: 'd', files: [{ status: 'M', path: 'a.js' }], log: 'l' };
+  assert.doesNotMatch(buildPrompt(base), /user instruction/i);
+  assert.match(buildPrompt({ ...base, instruction: 'put tests in their own commit' }), /put tests in their own commit/);
+});
+
 test('buildPrompt includes diff, file paths, log, and JSON instructions', () => {
   const prompt = buildPrompt({
     diff: 'DIFF_CONTENT',

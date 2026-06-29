@@ -1,7 +1,9 @@
-// The top-level command: collect changes, plan, review, then commit.
+// The top-level command, written as a flat pipeline:
+//   resolveSettings (pure) -> planCommits (collect + model) -> commitPlan (review + git)
+// Each effectful dependency is injectable, so main() is testable end to end.
 
 import { createInterface } from "node:readline";
-import { parseArgs, HELP } from "../cli.ts";
+import { parseArgs, HELP, type ParsedArgs } from "../cli.ts";
 import { parsePlan, parseMessage } from "../core/plan.ts";
 import { buildPrompt, buildRewritePrompt } from "../ai/prompts.ts";
 import { collect } from "../git/status.ts";
@@ -44,6 +46,20 @@ export interface Deps {
   input?: () => Promise<string>;
 }
 
+// resolveSettings(args, env, saved) -> the effective settings. Pure. Precedence:
+// explicit CLI flag / env var > saved settings file > built-in default.
+export function resolveSettings(
+  args: ParsedArgs,
+  env: Record<string, string | undefined>,
+  saved: Partial<Settings>,
+): Settings {
+  return {
+    model: args.model || env.COMMIT_MODEL || saved.model || DEFAULT_MODEL,
+    effort: env.COMMIT_EFFORT || saved.effort || DEFAULT_EFFORT,
+    verbose: args.verbose || saved.verbose || false,
+  };
+}
+
 // dryRunCommands(plan, expandPath) -> the exact git commands a real run would run.
 function dryRunCommands(plan: Plan, expandPath?: ExpandPath): string {
   return plan.commits
@@ -54,9 +70,8 @@ function dryRunCommands(plan: Plan, expandPath?: ExpandPath): string {
     .join("\n");
 }
 
-// renameExpander(files) -> an ExpandPath that turns a rename's new path into
-// [oldPath, newPath] so both ends are staged in the same commit (or undefined
-// when there are no renames).
+// renameExpander(files) -> an ExpandPath turning a rename's new path into
+// [oldPath, newPath] so both ends stage in the same commit (or undefined).
 function renameExpander(files: ChangedFile[]): ExpandPath | undefined {
   const renames = new Map<string, string[]>();
   for (const file of files) {
@@ -65,14 +80,137 @@ function renameExpander(files: ChangedFile[]): ExpandPath | undefined {
   return renames.size ? (path: string) => renames.get(path) ?? [path] : undefined;
 }
 
-// renameAliases(files) -> a map of each rename's old path -> new path, so a plan
-// that references the old path (as it appears in the diff) is reconciled.
+// renameAliases(files) -> each rename's old path -> new path, so a plan that
+// references the old path (as the diff shows it) is reconciled.
 function renameAliases(files: ChangedFile[]): Map<string, string> {
   const aliases = new Map<string, string>();
   for (const file of files) {
     if (file.status === "R" && file.from) aliases.set(file.from, file.path);
   }
   return aliases;
+}
+
+// Everything the pipeline steps need, assembled once in main().
+interface Pipeline {
+  args: ParsedArgs;
+  deps: Deps;
+  out: OutputStream;
+  statusStream: OutputStream;
+  git: RunGit;
+  settings: Settings;
+  collectChanges: () => Collected;
+  generate: (prompt: string) => string | Promise<string>;
+  replan: (settings: Settings, instruction?: string) => Promise<Plan | null>;
+  regenerateCommit: (
+    commit: PlannedCommit,
+    settings: Settings,
+  ) => Promise<CommitMessage | null>;
+}
+
+interface Planned {
+  plan: Plan;
+  files: ChangedFile[];
+  expandPath?: ExpandPath;
+}
+
+// planCommits(pipeline) -> the proposed plan (or null when there's nothing to
+// commit). Effectful: reads git and calls the model, but the shaping it does
+// (buildPrompt -> parsePlan) is pure.
+async function planCommits(pipeline: Pipeline): Promise<Planned | null> {
+  const { settings, statusStream } = pipeline;
+  const { diff, files, log } = pipeline.collectChanges();
+  if (files.length === 0) return null;
+
+  const prompt = buildPrompt({ diff, files, log, allowBody: settings.verbose });
+  const startedAt = Date.now();
+  const raw = await withStatus("planning commits", async () => pipeline.generate(prompt), {
+    stream: statusStream,
+  });
+  const plan = parsePlan(
+    raw,
+    files.map((file) => file.path),
+    renameAliases(files),
+  );
+
+  // Per-run timing readout on the status stream (TTY only, so pipes stay clean).
+  if (statusStream.isTTY) {
+    const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    const count = plan.commits.length;
+    statusStream.write(
+      `  planned ${count} commit${count === 1 ? "" : "s"} in ${seconds}s\n`,
+    );
+  }
+
+  return { plan, files, expandPath: renameExpander(files) };
+}
+
+// commitPlan(planned, pipeline) -> the commits made, [] if the user committed
+// nothing, or null if a non-TTY review was aborted (message already written).
+// The only step that mutates git.
+async function commitPlan(
+  planned: Planned,
+  pipeline: Pipeline,
+): Promise<Committed[] | null> {
+  const { plan, expandPath } = planned;
+  const { args, deps, out, git, settings } = pipeline;
+
+  if (args.apply) {
+    return execute(plan, { runGit: git, expandPath }).committed;
+  }
+
+  if (deps.nextKey || (process.stdin.isTTY && deps.input === undefined)) {
+    // Interactive arrow-key gate (real TTY, or injected keys for tests).
+    const driver: KeyDriver = deps.nextKey
+      ? {
+          nextKey: deps.nextKey,
+          readLine: deps.readLine ?? (async () => ""),
+          close: () => {},
+        }
+      : makeRawKeyDriver(process.stdin, process.stdout);
+    const dimensions = deps.nextKey
+      ? {}
+      : { width: process.stdout.columns || 80, height: process.stdout.rows || 24 };
+    try {
+      const result = await interactiveReview(plan, {
+        nextKey: driver.nextKey,
+        readLine: driver.readLine,
+        output: out,
+        runGit: git,
+        color: !process.env.NO_COLOR,
+        settings,
+        replan: pipeline.replan,
+        regenerateCommit: pipeline.regenerateCommit,
+        expandPath,
+        ...dimensions,
+      });
+      // Remember the settings for next time. Persist on real runs, or when a test
+      // injects saveSettings; skip otherwise so tests don't write files.
+      const persist = deps.saveSettings ?? (deps.nextKey ? null : saveSettings);
+      if (persist) persist(result.settings);
+      return result.committed;
+    } finally {
+      driver.close();
+    }
+  }
+
+  // Line-based fallback for piped / non-TTY input.
+  let input = deps.input;
+  let readlineInterface: ReturnType<typeof createInterface> | undefined;
+  if (!input) {
+    readlineInterface = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    const rl = readlineInterface;
+    input = () => new Promise<string>((resolve) => rl.question("", resolve));
+  }
+  const approved = await reviewGate(plan, { input, output: out });
+  if (readlineInterface) readlineInterface.close();
+  if (!approved) {
+    out.write("aborted — nothing committed\n");
+    return null;
+  }
+  return execute(approved, { runGit: git, expandPath }).committed;
 }
 
 export async function main(argv: string[], deps: Deps = {}): Promise<number> {
@@ -84,158 +222,82 @@ export async function main(argv: string[], deps: Deps = {}): Promise<number> {
     return 0;
   }
 
-  // Precedence: explicit CLI flag / env > saved settings > built-in default.
-  const saved = (deps.loadSettings ?? loadSettings)();
-  const model =
-    args.model || process.env.COMMIT_MODEL || saved.model || DEFAULT_MODEL;
-  const effort = process.env.COMMIT_EFFORT || saved.effort || DEFAULT_EFFORT;
-  const verbose = args.verbose || saved.verbose || false;
-  const initialSettings: Settings = { model, effort, verbose };
+  const settings = resolveSettings(
+    args,
+    process.env,
+    (deps.loadSettings ?? loadSettings)(),
+  );
 
-  const doCollect = deps.collect ?? collect;
-  const collectArg = deps.runGit ? { runGit: deps.runGit } : undefined;
-  const doClaude =
-    deps.callClaude ?? ((prompt: string) => callClaude(prompt, { model, effort }));
+  // Bind the injectable effects once, then assemble the pipeline context.
   const git = deps.runGit ?? runGit;
-  const statusStream = deps.statusStream ?? (process.stderr as OutputStream);
+  const collectArg = deps.runGit ? { runGit: git } : undefined;
+  const doCollect = deps.collect ?? collect;
+  const generate =
+    deps.callClaude ?? ((prompt: string) => callClaude(prompt, settings));
+  const planWith = (prompt: string, live: Settings) =>
+    deps.callClaude ? deps.callClaude(prompt) : callClaude(prompt, live);
 
-  // Run a prompt against the model using the live (possibly user-changed) settings.
-  const planWith = (prompt: string, settings: Settings) =>
-    deps.callClaude
-      ? deps.callClaude(prompt)
-      : callClaude(prompt, { model: settings.model, effort: settings.effort });
-
-  // Re-plan from scratch with current settings (grouping may change).
   const replan =
     deps.replan ??
-    (async (settings: Settings, instruction?: string): Promise<Plan | null> => {
+    (async (live: Settings, instruction?: string): Promise<Plan | null> => {
       const collected = doCollect(collectArg);
       if (!collected.files.length) return null;
       const prompt = buildPrompt({
         diff: collected.diff,
         files: collected.files,
         log: collected.log,
-        allowBody: settings.verbose,
+        allowBody: live.verbose,
         instruction,
       });
       return parsePlan(
-        await planWith(prompt, settings),
+        await planWith(prompt, live),
         collected.files.map((file) => file.path),
         renameAliases(collected.files),
       );
     });
 
-  // Rewrite one commit's message for its files (keeps grouping).
   const regenerateCommit =
     deps.regenerateCommit ??
-    (async (commit: PlannedCommit, settings: Settings): Promise<CommitMessage | null> => {
+    (async (commit: PlannedCommit, live: Settings): Promise<CommitMessage | null> => {
       const collected = doCollect(collectArg);
       const prompt = buildRewritePrompt(commit, collected.diff, {
-        verbose: settings.verbose,
+        verbose: live.verbose,
       });
-      return parseMessage(await planWith(prompt, settings));
+      return parseMessage(await planWith(prompt, live));
     });
 
+  const pipeline: Pipeline = {
+    args,
+    deps,
+    out,
+    statusStream: deps.statusStream ?? (process.stderr as OutputStream),
+    git,
+    settings,
+    collectChanges: () => doCollect(collectArg),
+    generate,
+    replan,
+    regenerateCommit,
+  };
+
   try {
-    const { diff, files, log } = doCollect(
-      deps.runGit ? { runGit: git } : undefined,
-    );
-    if (files.length === 0) {
+    const planned = await planCommits(pipeline);
+    if (!planned) {
       out.write("nothing to commit (tracked changes only)\n");
       return 0;
     }
-    const expandPath = renameExpander(files);
 
-    const prompt = buildPrompt({ diff, files, log, allowBody: verbose });
-    const startedAt = Date.now();
-    const raw = await withStatus("planning commits", async () => doClaude(prompt), {
-      stream: statusStream,
-    });
-    const plan = parsePlan(
-      raw,
-      files.map((file) => file.path),
-      renameAliases(files),
-    );
-
-    // Per-run timing readout on the status stream (TTY only, so pipes stay clean).
-    if (statusStream.isTTY) {
-      const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
-      const count = plan.commits.length;
-      statusStream.write(
-        `  planned ${count} commit${count === 1 ? "" : "s"} in ${seconds}s\n`,
-      );
-    }
-
-    out.write(renderPlan(plan) + "\n");
+    out.write(renderPlan(planned.plan) + "\n");
     if (args.dryRun) {
       out.write(
         "\n--- git commands (dry run) ---\n" +
-          dryRunCommands(plan, expandPath) +
+          dryRunCommands(planned.plan, planned.expandPath) +
           "\n",
       );
       return 0;
     }
 
-    let committed: Committed[];
-    if (args.apply) {
-      committed = execute(plan, { runGit: git, expandPath }).committed;
-    } else if (deps.nextKey || (process.stdin.isTTY && deps.input === undefined)) {
-      // Interactive arrow-key gate (real TTY, or injected keys for tests).
-      const driver: KeyDriver = deps.nextKey
-        ? {
-            nextKey: deps.nextKey,
-            readLine: deps.readLine ?? (async () => ""),
-            close: () => {},
-          }
-        : makeRawKeyDriver(process.stdin, process.stdout);
-      const dimensions = deps.nextKey
-        ? {}
-        : {
-            width: process.stdout.columns || 80,
-            height: process.stdout.rows || 24,
-          };
-      try {
-        const result = await interactiveReview(plan, {
-          nextKey: driver.nextKey,
-          readLine: driver.readLine,
-          output: out,
-          runGit: git,
-          color: !process.env.NO_COLOR,
-          settings: initialSettings,
-          replan,
-          regenerateCommit,
-          expandPath,
-          ...dimensions,
-        });
-        committed = result.committed;
-        // Remember the settings for next time. Persist on real runs, or when a
-        // test injects saveSettings; skip otherwise so tests don't write files.
-        const persist = deps.saveSettings ?? (deps.nextKey ? null : saveSettings);
-        if (persist) persist(result.settings);
-      } finally {
-        driver.close();
-      }
-    } else {
-      // Line-based fallback for piped / non-TTY input.
-      let input = deps.input;
-      let readlineInterface: ReturnType<typeof createInterface> | undefined;
-      if (!input) {
-        readlineInterface = createInterface({
-          input: process.stdin,
-          output: process.stdout,
-        });
-        const rl = readlineInterface;
-        input = () => new Promise<string>((resolve) => rl.question("", resolve));
-      }
-      const approved = await reviewGate(plan, { input, output: out });
-      if (readlineInterface) readlineInterface.close();
-      if (!approved) {
-        out.write("aborted — nothing committed\n");
-        return 1;
-      }
-      committed = execute(approved, { runGit: git, expandPath }).committed;
-    }
-
+    const committed = await commitPlan(planned, pipeline);
+    if (committed === null) return 1; // aborted; message already written
     if (!committed.length) {
       out.write("\nnothing committed\n");
       return 1;

@@ -4,7 +4,28 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadSettings, saveSettings } from '../src/config.ts';
-import { main } from '../src/commands/commit.ts';
+import { main, resolveSettings } from '../src/commands/commit.ts';
+import { parseArgs } from '../src/cli.ts';
+
+test('resolveSettings: CLI/env > saved > default', () => {
+  // defaults when nothing is set
+  assert.deepEqual(
+    resolveSettings(parseArgs([]), {}, {}),
+    { model: 'sonnet', effort: 'low', verbose: false },
+  );
+  // saved values fill in over defaults
+  assert.deepEqual(
+    resolveSettings(parseArgs([]), {}, { model: 'opus', effort: 'high', verbose: true }),
+    { model: 'opus', effort: 'high', verbose: true },
+  );
+  // CLI flag and env var win over saved
+  assert.deepEqual(
+    resolveSettings(parseArgs(['--model', 'haiku']), { COMMIT_EFFORT: 'medium' }, { model: 'opus', effort: 'high' }),
+    { model: 'haiku', effort: 'medium', verbose: false },
+  );
+  // -v turns verbose on
+  assert.equal(resolveSettings(parseArgs(['-v']), {}, {}).verbose, true);
+});
 
 test('saveSettings then loadSettings round-trips the known keys', () => {
   const dir = mkdtempSync(join(tmpdir(), 'gca-cfg-'));

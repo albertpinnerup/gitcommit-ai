@@ -7,14 +7,15 @@ Installs as the command **`commit`** (the shorter `gca` is taken by oh-my-zsh's 
 
 ## Requirements
 
-- Node.js >= 18
+- **Node.js >= 23.6** (runs the TypeScript sources directly via native type
+  stripping — no build step)
 - The [`claude` CLI](https://docs.claude.com/en/docs/claude-code) on your `PATH`
 
 ## Install
 
 ```bash
-chmod +x gitcommit-ai.mjs
-ln -s "$PWD/gitcommit-ai.mjs" /opt/homebrew/bin/commit   # or ~/bin/commit
+chmod +x index.ts
+ln -s "$PWD/index.ts" /opt/homebrew/bin/commit   # or ~/bin/commit
 ```
 
 ## Usage
@@ -22,7 +23,7 @@ ln -s "$PWD/gitcommit-ai.mjs" /opt/homebrew/bin/commit   # or ~/bin/commit
 ```bash
 commit                  # collect changes, propose commits, review, then commit
 commit --dry-run        # show the plan and the git commands; change nothing
-commit --yes            # skip the review gate and commit the proposed plan
+commit --apply          # skip the review gate and commit the proposed plan (-a)
 commit --verbose        # add a short body to each commit (-v; default: subject-only)
 commit --model opus     # plan with a specific model (default: sonnet)
 commit --help
@@ -101,6 +102,12 @@ When stdin is piped (not a TTY), it falls back to a simple line-based prompt.
 
 ## Develop
 
+Written in TypeScript, run directly by Node (no build step). Source is organized
+by concern under `src/` — `core/` is pure logic, `git/` is the only code that
+talks to git, `ai/` calls Claude, `ui/` renders and drives the terminal.
+
 ```bash
-node --test
+npm install        # dev deps: typescript + @types/node
+npm test           # node --test over test/*.test.ts
+npm run typecheck  # tsc --noEmit (strict)
 ```

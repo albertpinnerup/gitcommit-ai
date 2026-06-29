@@ -20,11 +20,28 @@ ln -s "$PWD/gitcommit-ai.mjs" /opt/homebrew/bin/commit   # or ~/bin/commit
 ## Usage
 
 ```bash
-commit            # collect changes, propose commits, review, then commit
-commit --dry-run  # show the plan and the git commands; change nothing
-commit --yes      # skip the review gate and commit the proposed plan
+commit                  # collect changes, propose commits, review, then commit
+commit --dry-run        # show the plan and the git commands; change nothing
+commit --yes            # skip the review gate and commit the proposed plan
+commit --model opus     # plan with a specific model (default: sonnet)
 commit --help
 ```
+
+### Model & speed
+
+Planning runs `claude` as a fast one-shot, not a full agent session:
+
+- **Model** defaults to `sonnet` (good quality, ~7s). Override per-run with
+  `--model <m>` or globally with `COMMIT_MODEL=<m>`. Note: on some accounts
+  `haiku` is routed slower than `sonnet`, so faster-sounding isn't always faster.
+- **Low reasoning effort** (`--effort low`) is the biggest lever — the default
+  (high) reasoning makes planning take ~3× longer for no real benefit here.
+  Override with `COMMIT_EFFORT=medium|high` for trickier groupings.
+- **No MCP servers** are loaded (`--strict-mcp-config`), and a **minimal system
+  prompt** replaces Claude Code's default — both cut startup and token overhead.
+- Output is kept small: **subject-only by default** (use `--body` to allow
+  bodies), **minified fence-free JSON**, and the **diff is capped** (~12k chars)
+  so a large staged change doesn't balloon the request.
 
 While Claude plans the commits, a live status bar (spinner + elapsed seconds)
 animates on stderr — shown only on a TTY, so piping stays clean.

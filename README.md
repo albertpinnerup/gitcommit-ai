@@ -47,7 +47,9 @@ commit is highlighted; move between them and accept them one at a time:
 - `enter` — commit the focused commit now, then continue with the rest
 - `a` — accept and commit all remaining
 - `s` — skip (drop the focused commit without committing)
-- `e` — edit the focused commit's subject
+- `e` — edit the focused commit's whole message line, including the tag — change
+  `feat(review): x` to `feat(upgrade): x`, or `feat` to `docs`. The suggestion is
+  pre-filled and editable; `enter` saves, `esc` cancels and goes back
 - `q` / `Ctrl-C` — quit (commits already made stay)
 
 When stdin is piped (not a TTY), it falls back to a simple line-based prompt.

@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { decodeKeys, renderReview, interactiveReview, executeOne } from '../gitcommit-ai.mjs';
+import { decodeKeys, editorReduce, renderReview, interactiveReview, executeOne } from '../gitcommit-ai.mjs';
 
 const PLAN = { commits: [
   { files: ['a.js'], type: 'feat', subject: 'add a' },
@@ -23,15 +23,48 @@ test('decodeKeys maps arrows, enter, ctrl-c, and plain chars', () => {
   assert.deepEqual(decodeKeys('\x1b[Bq'), ['down', 'q']);
 });
 
+test('decodeKeys maps backspace, escape, home, and end', () => {
+  assert.deepEqual(decodeKeys('\x7f'), ['backspace']);
+  assert.deepEqual(decodeKeys('\x08'), ['backspace']);
+  assert.deepEqual(decodeKeys('\x1b'), ['escape']);
+  assert.deepEqual(decodeKeys('\x1b[H'), ['home']);
+  assert.deepEqual(decodeKeys('\x1b[F'), ['end']);
+  assert.deepEqual(decodeKeys('\x1b[3~'), ['delete']);
+});
+
+test('editorReduce inserts, backspaces, and moves the cursor', () => {
+  let s = { buf: 'add a', pos: 5 };
+  s = editorReduce(s, 'backspace').state;          // 'add '
+  assert.deepEqual(s, { buf: 'add ', pos: 4 });
+  s = editorReduce(s, 'b').state;                  // 'add b'
+  assert.deepEqual(s, { buf: 'add b', pos: 5 });
+  s = editorReduce(s, 'home').state;
+  assert.equal(s.pos, 0);
+  s = editorReduce(s, 'right').state;
+  assert.equal(s.pos, 1);
+  s = editorReduce(s, 'X').state;                  // insert at pos 1 -> 'aXdd b'
+  assert.deepEqual(s, { buf: 'aXdd b', pos: 2 });
+});
+
+test('editorReduce: enter accepts, escape and ctrl-c cancel', () => {
+  assert.deepEqual(editorReduce({ buf: 'hi', pos: 2 }, 'enter'), { done: true, value: 'hi' });
+  assert.equal(editorReduce({ buf: 'hi', pos: 2 }, 'escape').cancelled, true);
+  assert.equal(editorReduce({ buf: 'hi', pos: 2 }, 'ctrl-c').cancelled, true);
+});
+
 // ---- renderReview ------------------------------------------------------------
 
-test('renderReview marks the focused commit and shows the legend', () => {
+test('renderReview numbers commits and marks the focused one', () => {
   const text = renderReview({ commits: PLAN.commits, cursor: 1, committed: [] }, { color: false });
   const lines = text.split('\n');
-  const aLine = lines.find((l) => l.includes('feat: add a'));
-  const bLine = lines.find((l) => l.includes('fix: fix b'));
-  assert.ok(!aLine.includes('❯'));      // unfocused row has no marker
-  assert.ok(bLine.includes('❯'));       // focus marker on the cursor row
+  // numbered labels are present
+  assert.match(text, /Commit 1/);
+  assert.match(text, /Commit 2/);
+  // focus marker sits on the focused commit's label row (Commit 2), not Commit 1
+  const c1 = lines.find((l) => l.includes('Commit 1'));
+  const c2 = lines.find((l) => l.includes('Commit 2'));
+  assert.ok(!c1.includes('❯'));
+  assert.ok(c2.includes('❯'));
   assert.match(text, /enter accept/i);
   assert.match(text, /accept all/i);
   assert.match(text, /quit/i);
@@ -103,14 +136,20 @@ test('interactiveReview: s skips a commit without committing it', async () => {
   assert.deepEqual(subjects, ['fix: fix b']); // first dropped, second committed
 });
 
-test('interactiveReview: e edits the focused subject before committing', async () => {
+test('interactiveReview: e pre-fills the full header and lets you change the tag', async () => {
   const { runGit, subjects } = fakeGit();
-  await interactiveReview(PLAN, {
-    nextKey: keys(['e', 'enter', 'q']),
-    readLine: async () => 'reworded',
-    output: sink(), runGit,
-  });
-  assert.deepEqual(subjects, ['feat: reworded']);
+  let seenInitial;
+  const readLine = async (_prompt, initial) => { seenInitial = initial; return 'feat(upgrade): add a'; };
+  await interactiveReview(PLAN, { nextKey: keys(['e', 'enter', 'q']), readLine, output: sink(), runGit });
+  assert.equal(seenInitial, 'feat: add a');                // pre-filled with the whole tag+subject
+  assert.deepEqual(subjects, ['feat(upgrade): add a']);    // edited tag is what gets committed
+});
+
+test('interactiveReview: cancelling an edit (null) keeps the original message', async () => {
+  const { runGit, subjects } = fakeGit();
+  const readLine = async () => null;              // user pressed esc
+  await interactiveReview(PLAN, { nextKey: keys(['e', 'enter', 'q']), readLine, output: sink(), runGit });
+  assert.deepEqual(subjects, ['feat: add a']);    // unchanged
 });
 
 test('interactiveReview: q with nothing committed returns empty', async () => {
@@ -134,7 +173,7 @@ test('executeOne commits exactly one commit', () => {
     return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
   };
   const out = executeOne({ files: ['a.txt'], type: 'feat', subject: 'change a' }, { runGit });
-  assert.equal(out.subject, 'change a');
+  assert.equal(out.subject, 'feat: change a'); // reports the actual committed header
   const show = g('show', '--name-only', '--format=%s', 'HEAD').stdout;
   assert.match(show, /change a/);
   assert.match(show, /a\.txt/);

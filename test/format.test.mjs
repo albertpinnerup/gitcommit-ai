@@ -30,3 +30,14 @@ test('formatCommitMessage with scope and body', () => {
 test('formatCommitMessage without scope or body', () => {
   assert.equal(formatCommitMessage({ type: 'fix', subject: 'bug' }), 'fix: bug');
 });
+
+test('formatCommitMessage header override replaces the tag+subject line', () => {
+  assert.equal(
+    formatCommitMessage({ type: 'feat', scope: 'review', subject: 'x', header: 'feat(upgrade): x' }),
+    'feat(upgrade): x',
+  );
+  assert.equal(
+    formatCommitMessage({ type: 'feat', subject: 'x', header: 'docs: x', body: 'why' }),
+    'docs: x\n\nwhy',
+  );
+});

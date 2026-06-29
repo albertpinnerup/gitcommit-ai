@@ -102,8 +102,10 @@ export function getChangedFiles(porcelain) {
   return out;
 }
 
-export function formatCommitMessage({ type, scope, subject, body }) {
-  const head = scope ? `${type}(${scope}): ${subject}` : `${type}: ${subject}`;
+export function formatCommitMessage({ type, scope, subject, body, header }) {
+  // `header` is a verbatim override of the first line (used when the user edits
+  // the whole tag+subject, e.g. "feat(review): x" -> "feat(upgrade): x").
+  const head = header != null ? header : (scope ? `${type}(${scope}): ${subject}` : `${type}: ${subject}`);
   return body && body.trim() ? `${head}\n\n${body.trim()}` : head;
 }
 
@@ -280,25 +282,56 @@ export async function reviewGate(plan, { input, output, autoYes } = {}) {
 // ---------------------------------------------------------------------------
 
 // decodeKeys(str) -> normalized key tokens. Pure, so it is unit-testable without
-// a terminal. Handles CSI arrow sequences, enter, ctrl-c, and plain characters.
+// a terminal. Handles CSI sequences (arrows/home/end), enter, ctrl-c, escape,
+// backspace, and plain characters.
+const CSI = { A: 'up', B: 'down', C: 'right', D: 'left', H: 'home', F: 'end', '1~': 'home', '4~': 'end', '3~': 'delete' };
 export function decodeKeys(s) {
   const keys = [];
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === '\x1b' && s[i + 1] === '[') {
-      const c = s[i + 2];
-      if (c === 'A') keys.push('up');
-      else if (c === 'B') keys.push('down');
-      else if (c === 'C') keys.push('right');
-      else if (c === 'D') keys.push('left');
-      i += 2;
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === '\x1b' && s[i + 1] === '[') {
+      // CSI: ESC [ <params> <final letter or ~>
+      let j = i + 2, params = '';
+      while (j < s.length && !/[A-Za-z~]/.test(s[j])) { params += s[j]; j++; }
+      const final = s[j] ?? '';
+      const tok = CSI[params + final] || CSI[final];
+      if (tok) keys.push(tok);
+      i = j + 1;
       continue;
     }
-    const ch = s[i];
-    if (ch === '\r' || ch === '\n') keys.push('enter');
+    if (ch === '\x1b') keys.push('escape');
+    else if (ch === '\r' || ch === '\n') keys.push('enter');
     else if (ch === '\x03') keys.push('ctrl-c');
+    else if (ch === '\x7f' || ch === '\x08') keys.push('backspace');
     else keys.push(ch);
+    i++;
   }
   return keys;
+}
+
+// editorReduce(state, key) -> { state } | { done, value } | { done, cancelled }.
+// Pure single-line text editor over state { buf, pos }. enter accepts, escape /
+// ctrl-c cancel, backspace/left/right/home/end edit, printable chars insert.
+export function editorReduce({ buf, pos }, key) {
+  switch (key) {
+    case 'enter': return { done: true, value: buf };
+    case 'escape':
+    case 'ctrl-c': return { done: true, cancelled: true };
+    case 'backspace':
+      return pos > 0
+        ? { state: { buf: buf.slice(0, pos - 1) + buf.slice(pos), pos: pos - 1 } }
+        : { state: { buf, pos } };
+    case 'left': return { state: { buf, pos: Math.max(0, pos - 1) } };
+    case 'right': return { state: { buf, pos: Math.min(buf.length, pos + 1) } };
+    case 'home': return { state: { buf, pos: 0 } };
+    case 'end': return { state: { buf, pos: buf.length } };
+    default:
+      if (typeof key === 'string' && key.length === 1 && key >= ' ') {
+        return { state: { buf: buf.slice(0, pos) + key + buf.slice(pos), pos: pos + 1 } };
+      }
+      return { state: { buf, pos } };
+  }
 }
 
 const LEGEND = '↑/↓ move · enter accept · a accept all · s skip · e edit · q quit';
@@ -313,6 +346,7 @@ export function renderReview({ commits, cursor, committed }, { color = true, wid
   const inv = color ? (s) => `\x1b[7m${s}\x1b[0m` : (s) => s;
   const dim = color ? (s) => `\x1b[2m${s}\x1b[0m` : (s) => s;
   const accent = color ? (s) => `\x1b[36m${s}\x1b[0m` : (s) => s;
+  const bold = color ? (s) => `\x1b[1m${s}\x1b[0m` : (s) => s;
   // Clip raw (un-styled) text to the available columns, then style it.
   const clip = (s, indent = 0) => {
     const w = width ? width - indent : 0;
@@ -325,19 +359,22 @@ export function renderReview({ commits, cursor, committed }, { color = true, wid
   }
   const footer = ['', dim(clip(LEGEND))];
 
+  const BLOCK_ROWS = 3; // label + message + files
   const blocks = commits.map((c, i) => {
     const focused = i === cursor;
-    const h = clip(formatCommitMessage(c).split('\n')[0], 4);
+    const h = clip(formatCommitMessage(c).split('\n')[0], 7); // 5-space indent + 2 pad spaces
     const f = clip('files: ' + c.files.join(', '), 5);
-    const headRow = (focused ? accent('❯ ') : '  ') + (focused ? inv(` ${h} `) : ` ${h} `);
-    return [headRow, '     ' + dim(f)];
+    const label = `Commit ${i + 1}`;
+    const labelRow = (focused ? accent('❯ ') : '  ') + (focused ? bold(label) : dim(label));
+    const msgRow = '     ' + (focused ? inv(` ${h} `) : ` ${h} `);
+    return [labelRow, msgRow, '     ' + dim(f)];
   });
 
   // Window the list to fit `height`, keeping the focused commit on screen.
   let shown = blocks, above = 0, below = 0;
   if (height) {
-    const avail = Math.max(2, height - head.length - footer.length);
-    const maxBlocks = Math.max(1, Math.floor(avail / 2) - 1); // -1 leaves room for ↑/↓ hints
+    const avail = Math.max(BLOCK_ROWS, height - head.length - footer.length);
+    const maxBlocks = Math.max(1, Math.floor(avail / BLOCK_ROWS) - 1); // -1 leaves room for ↑/↓ hints
     if (blocks.length > maxBlocks) {
       let start = cursor - Math.floor(maxBlocks / 2);
       start = Math.max(0, Math.min(start, blocks.length - maxBlocks));
@@ -362,6 +399,7 @@ export async function interactiveReview(plan, {
   nextKey, readLine, output, runGit: git = runGit, color = true, width, height,
 } = {}) {
   const out = output ?? process.stdout;
+  const edit = readLine ?? (async (_p, init) => init); // no-op edit when not wired
   let commits = plan.commits.slice();
   let cursor = 0;
   const committed = [];
@@ -392,8 +430,12 @@ export async function interactiveReview(plan, {
         commits.splice(cursor, 1);
         if (cursor >= commits.length) cursor = Math.max(0, commits.length - 1);
       } else if (key === 'e') {
-        const subject = ((await readLine('  new subject: ')) || '').trim();
-        if (subject) commits[cursor] = { ...commits[cursor], subject };
+        // Pre-fill with the full header (tag + subject) so the user can change
+        // the tag too, e.g. "feat(review): x" -> "feat(upgrade): x". The edited
+        // line is stored verbatim as a header override. null result = cancelled.
+        const current = formatCommitMessage(commits[cursor]).split('\n')[0];
+        const edited = await edit('  edit message (enter save · esc cancel): ', current);
+        if (edited != null && edited.trim()) commits[cursor] = { ...commits[cursor], header: edited.trim() };
       } else if (key === 'enter') {
         commitAt(cursor);
       } else if (key === 'a') {
@@ -432,18 +474,32 @@ function makeRawKeyDriver(input = process.stdin, output = process.stdout) {
     else waiters.push(res);
   });
 
-  const readLine = (promptText) => new Promise((res) => {
+  // Raw-mode single-line editor: pre-filled with `initial`, fully editable, with
+  // enter to save and esc/ctrl-c to cancel (resolves null). Stays in raw mode.
+  const readLine = (promptText, initial = '') => new Promise((res) => {
     input.removeListener('data', onData);
-    if (input.setRawMode) input.setRawMode(false);
-    output.write('\x1b[H\x1b[J\x1b[?25h'); // clear panel, show cursor for typing
-    const rl = createInterface({ input, output });
-    rl.question(promptText, (ans) => {
-      rl.close();
-      output.write('\x1b[?25l'); // hide cursor again
-      if (input.setRawMode) input.setRawMode(true);
-      input.on('data', onData);
-      res(ans);
-    });
+    let state = { buf: initial, pos: initial.length };
+    const render = () => {
+      output.write('\x1b[H\x1b[J' + promptText + state.buf +
+        `\x1b[1;${promptText.length + state.pos + 1}H`);
+    };
+    output.write('\x1b[?25h'); // show cursor for typing
+    render();
+    const onKey = (chunk) => {
+      for (const key of decodeKeys(chunk)) {
+        const r = editorReduce(state, key);
+        if (r.done) {
+          input.removeListener('data', onKey);
+          output.write('\x1b[?25l'); // hide cursor again
+          input.on('data', onData);
+          res(r.cancelled ? null : r.value);
+          return;
+        }
+        state = r.state;
+      }
+      render();
+    };
+    input.on('data', onKey);
   });
 
   const close = () => {
@@ -473,7 +529,7 @@ export function executeOne(commit, { runGit: git = runGit } = {}) {
   if (bodyParts.length) args.push('-m', bodyParts.join('\n\n'));
   const commit_ = git(args);
   if (commit_.status !== 0) throw new Error(`git commit failed: ${commit_.stderr}`);
-  return { subject: commit.subject, files: commit.files };
+  return { subject, files: commit.files };
 }
 
 export function execute(plan, { runGit: git = runGit } = {}) {

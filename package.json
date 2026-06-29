@@ -7,10 +7,14 @@
   },
   "scripts": {
     "test": "node --test \"test/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev": "node --watch ./index.ts"
   },
   "devDependencies": {
     "@types/node": "^26.0.1",
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "chalk": "^5.6.2"
   }
 }

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadSettings, saveSettings } from '../src/settings-store.mjs';
-import { main } from '../src/main.mjs';
+import { loadSettings, saveSettings } from '../src/config.ts';
+import { main } from '../src/commands/commit.ts';
 
 test('saveSettings then loadSettings round-trips the known keys', () => {
   const dir = mkdtempSync(join(tmpdir(), 'gca-cfg-'));

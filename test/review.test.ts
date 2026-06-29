@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderPlan, reviewGate } from '../src/review.mjs';
+import { renderPlan, reviewGate } from '../src/ui/review.ts';
 
 function lineSource(lines) {
   let i = 0;

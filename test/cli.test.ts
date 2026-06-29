@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseArgs } from '../src/cli-args.mjs';
-import { main } from '../src/main.mjs';
+import { parseArgs } from '../src/cli.ts';
+import { main } from '../src/commands/commit.ts';
 
 const sink = () => { const b = []; return { write: (s) => b.push(s), text: () => b.join('') }; };
 const FAKE_COLLECT = () => ({ diff: 'd', files: [{ status: 'M', path: 'a.js' }], log: 'l' });

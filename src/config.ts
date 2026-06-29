@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
+import type { Settings } from "./types.ts";
 
 export const SETTINGS_PATH = join(
   process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
@@ -10,9 +11,8 @@ export const SETTINGS_PATH = join(
   "settings.json",
 );
 
-// loadSettings(path) -> saved { model?, effort?, verbose? }, or {} if the file
-// is missing or unreadable.
-export function loadSettings(path = SETTINGS_PATH) {
+// loadSettings(path) -> saved settings (partial), or {} if missing/unreadable.
+export function loadSettings(path = SETTINGS_PATH): Partial<Settings> {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     return parsed && typeof parsed === "object" ? parsed : {};
@@ -23,7 +23,7 @@ export function loadSettings(path = SETTINGS_PATH) {
 
 // saveSettings(settings, path) -> true on success. Persists only the known keys
 // and never throws (a read-only config dir shouldn't break committing).
-export function saveSettings(settings, path = SETTINGS_PATH) {
+export function saveSettings(settings: Settings, path = SETTINGS_PATH): boolean {
   try {
     mkdirSync(dirname(path), { recursive: true });
     const { model, effort, verbose } = settings;

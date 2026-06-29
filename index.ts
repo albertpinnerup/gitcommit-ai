@@ -5,12 +5,12 @@
 
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { main } from "./src/main.mjs";
+import { main } from "./src/commands/commit.ts";
 
 // True when this file was run directly (incl. via a `commit` symlink on PATH),
 // false when imported. argv[1] is resolved to its real path so a symlink still
 // matches this module's file URL.
-function isMainModule() {
+function isMainModule(): boolean {
   if (!process.argv[1]) return false;
   try {
     return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;

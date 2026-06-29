@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractJson, validatePlan, parsePlan, parseMessage, repairPlan } from '../src/plan.mjs';
+import { extractJson, validatePlan, parsePlan, parseMessage, repairPlan } from '../src/core/plan.ts';
 
 test('repairPlan keeps a duplicated file in its first commit and drops emptied commits', () => {
   const plan = { commits: [
@@ -20,6 +20,15 @@ test('parsePlan no longer throws when a file is listed in two commits', () => {
   const plan = parsePlan(raw, ['big.js']);
   assert.equal(plan.commits.length, 1);
   assert.deepEqual(plan.commits[0].files, ['big.js']);
+});
+
+test('parsePlan reconciles a rename old path via aliases (diff shows the old path)', () => {
+  const raw = JSON.stringify({ commits: [
+    { files: ['src/old.mjs'], type: 'refactor', subject: 'rename to ts' },
+  ]});
+  const aliases = new Map([['src/old.mjs', 'src/new.ts']]);
+  const plan = parsePlan(raw, ['src/new.ts'], aliases);
+  assert.deepEqual(plan.commits[0].files, ['src/new.ts']);
 });
 
 test('parseMessage extracts a single validated message', () => {

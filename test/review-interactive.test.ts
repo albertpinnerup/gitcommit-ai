@@ -4,11 +4,12 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { decodeKeys, editorReduce } from '../src/keys.mjs';
-import { renderReview, interactiveReview } from '../src/review.mjs';
-import { executeOne } from '../src/git.mjs';
-import { settingsReduce, renderSettings } from '../src/settings-pane.mjs';
-import { fileSelectReduce, renderFileSelect } from '../src/file-select.mjs';
+import { decodeKeys } from '../src/ui/keys.ts';
+import { editorReduce } from '../src/ui/editor.ts';
+import { renderReview, interactiveReview } from '../src/ui/review.ts';
+import { executeOne } from '../src/git/commit.ts';
+import { settingsReduce, renderSettings } from '../src/ui/settings-pane.ts';
+import { fileSelectReduce, renderFileSelect } from '../src/ui/file-select.ts';
 
 const PLAN = { commits: [
   { files: ['a.js'], type: 'feat', subject: 'add a' },
@@ -190,7 +191,7 @@ test('interactiveReview: E adds a body to a subject-only commit', async () => {
     { nextKey: keys(['E', 'enter', 'q']), readLine, output: sink(), runGit },
   );
   assert.equal(seenInitial, '');  // no prior body
-  assert.deepEqual(calls[0], ['-m', 'feat: add a', '-m', 'because reasons']);
+  assert.deepEqual(calls[0], ['-m', 'feat: add a', '-m', 'because reasons', '--only', '--', 'a.js']);
 });
 
 test('interactiveReview: E pre-fills an existing body with literal \\n and restores newlines', async () => {
@@ -202,7 +203,7 @@ test('interactiveReview: E pre-fills an existing body with literal \\n and resto
     { nextKey: keys(['E', 'enter', 'q']), readLine, output: sink(), runGit },
   );
   assert.equal(seenInitial, 'old one\\nold two');           // existing body shown single-line
-  assert.deepEqual(calls[0], ['-m', 'feat: x', '-m', 'one\ntwo']); // \n converted to real newline
+  assert.deepEqual(calls[0], ['-m', 'feat: x', '-m', 'one\ntwo', '--only', '--', 'a.js']);
 });
 
 test('interactiveReview: E with empty input clears the body', async () => {
@@ -211,7 +212,7 @@ test('interactiveReview: E with empty input clears the body', async () => {
     { commits: [{ files: ['a.js'], type: 'feat', subject: 'x', body: 'remove me' }] },
     { nextKey: keys(['E', 'enter', 'q']), readLine: async () => '', output: sink(), runGit },
   );
-  assert.deepEqual(calls[0], ['-m', 'feat: x']); // no -m body
+  assert.deepEqual(calls[0], ['-m', 'feat: x', '--only', '--', 'a.js']); // no -m body
 });
 
 test('interactiveReview: E cancel (null) keeps the existing body', async () => {
@@ -220,7 +221,7 @@ test('interactiveReview: E cancel (null) keeps the existing body', async () => {
     { commits: [{ files: ['a.js'], type: 'feat', subject: 'x', body: 'keep me' }] },
     { nextKey: keys(['E', 'enter', 'q']), readLine: async () => null, output: sink(), runGit },
   );
-  assert.deepEqual(calls[0], ['-m', 'feat: x', '-m', 'keep me']);
+  assert.deepEqual(calls[0], ['-m', 'feat: x', '-m', 'keep me', '--only', '--', 'a.js']);
 });
 
 test('interactiveReview: q with nothing committed returns empty', async () => {

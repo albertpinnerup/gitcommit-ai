@@ -1,13 +1,24 @@
 // Reviewing the proposed plan: a plain-text renderer + line-based gate (for
 // pipes) and the interactive arrow-key picker (for a real terminal).
 
-import { styles, clampToWidth } from "./ansi.mjs";
-import { formatCommitMessage } from "./commit-message.mjs";
-import { executeOne, runGit } from "./git.mjs";
-import { withStatus } from "./status-bar.mjs";
-import { settingsReduce, renderSettings } from "./settings-pane.mjs";
-import { fileSelectReduce, renderFileSelect } from "./file-select.mjs";
-import { DEFAULT_MODEL, DEFAULT_EFFORT } from "./claude.mjs";
+import { styles, clampToWidth } from "./ansi.ts";
+import { formatCommitMessage } from "../core/message.ts";
+import { executeOne } from "../git/commit.ts";
+import { runGit } from "../git/run.ts";
+import { withStatus } from "./spinner.ts";
+import { settingsReduce, renderSettings } from "./settings-pane.ts";
+import { fileSelectReduce, renderFileSelect, type FileSelectState } from "./file-select.ts";
+import { DEFAULT_MODEL, DEFAULT_EFFORT } from "../ai/claude.ts";
+import type {
+  Plan,
+  PlannedCommit,
+  CommitMessage,
+  Committed,
+  Settings,
+  RunGit,
+  ExpandPath,
+  OutputStream,
+} from "../types.ts";
 
 const LEGEND_NAV = "↑/↓ move · enter accept · a accept all · s skip · q quit";
 const LEGEND_EDIT =
@@ -15,7 +26,7 @@ const LEGEND_EDIT =
 
 // renderPlan(plan) -> plain numbered text of every commit (used for --dry-run
 // and the non-interactive gate).
-export function renderPlan(plan) {
+export function renderPlan(plan: Plan): string {
   return plan.commits
     .map((commit, index) => {
       const message = formatCommitMessage(commit)
@@ -27,12 +38,21 @@ export function renderPlan(plan) {
     .join("\n\n");
 }
 
+interface ReviewGateOptions {
+  input: () => Promise<string>;
+  output?: OutputStream;
+  autoApply?: boolean;
+}
+
 // reviewGate(plan, {input, output, autoApply}) -> the approved plan or null.
 // A simple line-based prompt for piped / non-TTY input.
-export async function reviewGate(plan, { input, output, autoApply } = {}) {
+export async function reviewGate(
+  plan: Plan,
+  { input, output, autoApply }: ReviewGateOptions,
+): Promise<Plan | null> {
   const out = output ?? process.stdout;
   if (autoApply) return plan;
-  let commits = plan.commits.slice();
+  const commits = plan.commits.slice();
   for (;;) {
     out.write("\n" + renderPlan({ commits }) + "\n");
     out.write("\n[a]pprove all / [e]dit <n> / [s]kip <n> / [q]uit: ");
@@ -56,20 +76,32 @@ export async function reviewGate(plan, { input, output, autoApply } = {}) {
   }
 }
 
-// renderReview(state, {color, width, height, settings}) -> the full picker panel
-// text (no cursor moves). The focused commit gets a marker + inverse video.
-// Lines are clamped to `width` so they never wrap (a wrapped line would desync
-// the cursor-based redraw); blocks are windowed to `height` so the panel always
-// fits with the focused commit visible. width/height omitted -> no clamp/window.
+interface RenderReviewState {
+  commits: PlannedCommit[];
+  cursor: number;
+  committed: Committed[];
+}
+
+interface RenderReviewOptions {
+  color?: boolean;
+  width?: number;
+  height?: number;
+  settings?: Settings;
+}
+
+// renderReview(state, opts) -> the full picker panel text (no cursor moves). The
+// focused commit gets a marker + inverse video. Lines are clamped to `width` so
+// they never wrap; blocks are windowed to `height` so the panel always fits with
+// the focused commit visible. width/height omitted -> no clamp/window.
 export function renderReview(
-  { commits, cursor, committed },
-  { color = true, width, height, settings } = {},
-) {
+  { commits, cursor, committed }: RenderReviewState,
+  { color = true, width, height, settings }: RenderReviewOptions = {},
+): string {
   const { invert, dim, accent, bold } = styles(color);
-  const clip = (text, indent = 0) =>
+  const clip = (text: string, indent = 0) =>
     clampToWidth(text, width ? width - indent : 0);
 
-  const header = [];
+  const header: string[] = [];
   if (settings) {
     header.push(
       dim(
@@ -145,11 +177,28 @@ export function renderReview(
   return lines.join("\n");
 }
 
+interface InteractiveReviewOptions {
+  nextKey: () => Promise<string>;
+  readLine?: (prompt: string, initial?: string) => Promise<string | null>;
+  output?: OutputStream;
+  runGit?: RunGit;
+  color?: boolean;
+  width?: number;
+  height?: number;
+  settings?: Settings;
+  replan?: (settings: Settings, instruction?: string) => Promise<Plan | null>;
+  regenerateCommit?: (
+    commit: PlannedCommit,
+    settings: Settings,
+  ) => Promise<CommitMessage | null>;
+  expandPath?: ExpandPath;
+}
+
 // interactiveReview(plan, opts) drives the arrow-key gate. nextKey()/readLine()
 // are injectable so the loop is testable without raw-mode stdin. Commits happen
 // incrementally via executeOne. Returns { committed, settings }.
 export async function interactiveReview(
-  plan,
+  plan: Plan,
   {
     nextKey,
     readLine,
@@ -159,19 +208,19 @@ export async function interactiveReview(
     width,
     height,
     settings = { model: DEFAULT_MODEL, effort: DEFAULT_EFFORT, verbose: false },
-    replan, // async (settings, instruction) -> plan | null  (full re-plan)
-    regenerateCommit, // async (commit, settings) -> message | null  (one commit)
-  } = {},
-) {
+    replan,
+    regenerateCommit,
+    expandPath,
+  }: InteractiveReviewOptions,
+): Promise<{ committed: Committed[]; settings: Settings }> {
   const out = output ?? process.stdout;
-  const edit = readLine ?? (async (_prompt, initial) => initial); // no-op when unwired
+  const edit = readLine ?? (async (_prompt: string, initial?: string) => initial ?? "");
   let commits = plan.commits.slice();
   let cursor = 0;
-  let activeSettings = { ...settings };
-  const committed = [];
+  let activeSettings: Settings = { ...settings };
+  const committed: Committed[] = [];
 
   // Redraw by homing the cursor and clearing to end of screen, then reprinting.
-  // Pairs with the alt-screen buffer the driver sets up.
   const draw = () => {
     const text = renderReview(
       { commits, cursor, committed },
@@ -180,17 +229,17 @@ export async function interactiveReview(
     out.write("\x1b[H\x1b[J" + text + "\n");
   };
   // Transient notice (model calls are slow); cleared by the next draw().
-  const notify = (message) => out.write("\x1b[H\x1b[J" + message + "\n");
+  const notify = (message: string) => out.write("\x1b[H\x1b[J" + message + "\n");
 
-  const commitFocused = (index) => {
-    committed.push(executeOne(commits[index], { runGit: git }));
+  const commitFocused = (index: number) => {
+    committed.push(executeOne(commits[index], { runGit: git, expandPath }));
     commits.splice(index, 1);
     if (cursor >= commits.length) cursor = Math.max(0, commits.length - 1);
   };
 
   // Replace a commit's message but keep its files (a regenerated message drops
   // any prior header override).
-  const applyMessage = (index, message) => {
+  const applyMessage = (index: number, message: CommitMessage | null) => {
     if (message) commits[index] = { ...message, files: commits[index].files };
   };
 
@@ -209,10 +258,7 @@ export async function interactiveReview(
         // Pre-fill with the full header (tag + subject) so the user can change
         // the tag too. The edited line is stored verbatim as a header override.
         const current = formatCommitMessage(commits[cursor]).split("\n")[0];
-        const edited = await edit(
-          "  edit message (enter save · esc cancel): ",
-          current,
-        );
+        const edited = await edit("  edit message (enter save · esc cancel): ", current);
         if (edited != null && edited.trim()) {
           commits[cursor] = { ...commits[cursor], header: edited.trim() };
         }
@@ -235,7 +281,7 @@ export async function interactiveReview(
       } else if (key === "n") {
         await addOwnCommit();
       } else if (key === "p" && replan) {
-        await askClaudeToReplan();
+        await askClaudeToReplan(replan);
       } else if (key === "c") {
         await runSettingsPane();
       } else if (key === "R" && regenerateCommit) {
@@ -252,7 +298,7 @@ export async function interactiveReview(
         await regenerateAll();
       }
     } catch (error) {
-      out.write(`\nerror: ${error.message}\n`);
+      out.write(`\nerror: ${(error as Error).message}\n`);
       break;
     }
     draw();
@@ -266,16 +312,16 @@ export async function interactiveReview(
   async function addOwnCommit() {
     const focusedFiles = new Set(commits[cursor]?.files ?? []);
     const allFiles = commits.flatMap((commit) => commit.files);
-    let selectState = {
+    let selectState: FileSelectState = {
       items: allFiles.map((path) => ({ path, on: focusedFiles.has(path) })),
       cursor: 0,
     };
-    let selectedFiles = null;
+    let selectedFiles: string[] | null = null;
     for (;;) {
       out.write("\x1b[H\x1b[J" + renderFileSelect(selectState, { color }) + "\n");
       const step = fileSelectReduce(selectState, await nextKey());
-      if (step.done) {
-        selectedFiles = step.cancelled ? null : step.selected;
+      if ("done" in step) {
+        selectedFiles = "cancelled" in step ? null : step.selected;
         break;
       }
       selectState = step.state;
@@ -303,7 +349,9 @@ export async function interactiveReview(
   }
 
   // p: type a natural-language instruction, then re-plan the whole list with it.
-  async function askClaudeToReplan() {
+  async function askClaudeToReplan(
+    runReplan: (settings: Settings, instruction?: string) => Promise<Plan | null>,
+  ) {
     const instruction = await edit(
       "  tell Claude what to change (enter · esc cancel): ",
       "",
@@ -312,7 +360,7 @@ export async function interactiveReview(
     out.write("\x1b[H\x1b[J");
     const newPlan = await withStatus(
       "re-planning with your guidance",
-      () => replan(activeSettings, instruction.trim()),
+      () => runReplan(activeSettings, instruction.trim()),
       { stream: out },
     );
     if (newPlan && newPlan.commits.length) {
@@ -327,7 +375,7 @@ export async function interactiveReview(
     for (;;) {
       out.write("\x1b[H\x1b[J" + renderSettings(paneState, { color }) + "\n");
       const step = settingsReduce(paneState, await nextKey());
-      if (step.done) break;
+      if ("done" in step) break;
       paneState = step.state;
     }
     activeSettings = paneState.settings;

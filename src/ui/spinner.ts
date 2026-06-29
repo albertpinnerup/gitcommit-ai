@@ -1,9 +1,11 @@
 // A spinner + elapsed-time status line shown while a slow task runs.
 
+import type { OutputStream } from "../types.ts";
+
 export const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 // statusLine(frame, elapsedSeconds, label) -> the visible text (no CR/clear).
-export function statusLine(frame, elapsedSeconds, label) {
+export function statusLine(frame: string, elapsedSeconds: number, label: string): string {
   return `  ${frame}  commit · ${elapsedSeconds}s · ${label || "working…"}`;
 }
 
@@ -11,11 +13,15 @@ export function statusLine(frame, elapsedSeconds, label) {
 // status line on `stream` (default stderr). Only animates on a TTY, and always
 // clears the line when the task settles, success or failure. The task must be
 // non-blocking (await-able) for the spinner to actually tick.
-export async function withStatus(label, task, { stream = process.stderr } = {}) {
+export async function withStatus<T>(
+  label: string,
+  task: () => Promise<T>,
+  { stream = process.stderr as OutputStream }: { stream?: OutputStream } = {},
+): Promise<T> {
   const animate = !!stream.isTTY;
   const startedAt = Date.now();
   let frameIndex = 0;
-  let ticker;
+  let ticker: ReturnType<typeof setInterval> | undefined;
   if (animate) {
     ticker = setInterval(() => {
       frameIndex = (frameIndex + 1) % FRAMES.length;

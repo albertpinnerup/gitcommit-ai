@@ -1,9 +1,20 @@
 // Building the prompts sent to Claude for full-plan and single-commit requests.
 
+import type { ChangedFile, PlannedCommit } from "../types.ts";
+
 const MAX_DIFF_CHARS = 12000;
 
-// buildPrompt({diff, files, log, allowBody, instruction}) -> the planner prompt
-// asking Claude to group all changed files into logical commits.
+interface BuildPromptInput {
+  diff: string;
+  files: ChangedFile[];
+  log: string;
+  allowBody?: boolean;
+  maxDiffChars?: number;
+  instruction?: string;
+}
+
+// buildPrompt(input) -> the planner prompt asking Claude to group all changed
+// files into logical commits.
 export function buildPrompt({
   diff,
   files,
@@ -11,7 +22,7 @@ export function buildPrompt({
   allowBody = false,
   maxDiffChars = MAX_DIFF_CHARS,
   instruction,
-}) {
+}: BuildPromptInput): string {
   const fileList = files.map((file) => `${file.status}\t${file.path}`).join("\n");
 
   let trimmedDiff = diff;
@@ -43,6 +54,7 @@ Rules:
   style, refactor, perf, test, build, ci, chore, revert. Keep subject <= 72 chars,
   imperative mood, no trailing period.
 - Order commits so prerequisite changes come first.
+- A status of "R" marks a rename — refer to it by the path shown in the list.
 ${bodyRule}${guidance}
 
 Respond with ONLY a JSON object of this exact shape (the example is pretty-printed
@@ -68,10 +80,10 @@ ${trimmedDiff}${truncationNote}
 // buildRewritePrompt(commit, diff, {verbose}) -> a prompt to rewrite a SINGLE
 // commit's message for its files (used by per-commit and messages-only regen).
 export function buildRewritePrompt(
-  commit,
-  diff,
-  { verbose = false, maxDiffChars = MAX_DIFF_CHARS } = {},
-) {
+  commit: PlannedCommit,
+  diff: string,
+  { verbose = false, maxDiffChars = MAX_DIFF_CHARS }: { verbose?: boolean; maxDiffChars?: number } = {},
+): string {
   let trimmedDiff = diff;
   if (maxDiffChars && trimmedDiff.length > maxDiffChars) {
     trimmedDiff = trimmedDiff.slice(0, maxDiffChars) + "\n…(diff truncated)";

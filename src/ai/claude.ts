@@ -1,6 +1,7 @@
 // Invoking the `claude` CLI as a fast one-shot text generator.
 
 import { execFile } from "node:child_process";
+import type { GitResult } from "../types.ts";
 
 export const DEFAULT_MODEL = "sonnet";
 // Reasoning effort dominates latency here: the default (high) reasoning makes a
@@ -15,11 +16,20 @@ const PLANNER_SYSTEM_PROMPT =
 
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
-// runClaudeCli(prompt, model, effort) -> Promise<{ status, stdout, stderr }>.
-// Speed flags: --strict-mcp-config (with no --mcp-config) loads ZERO MCP servers;
-// a small --system-prompt + fast --model + low --effort keep latency down.
-// (--bare is deliberately NOT used — it skips the settings that hold auth.)
-function runClaudeCli(prompt, model, effort) {
+// A runner returns the raw process result; injectable for tests.
+export type ClaudeRunner = (prompt: string) => GitResult | Promise<GitResult>;
+
+interface CallClaudeOptions {
+  runner?: ClaudeRunner;
+  model?: string;
+  effort?: string;
+}
+
+// runClaudeCli(prompt, model, effort) -> the process result. Speed flags:
+// --strict-mcp-config (with no --mcp-config) loads ZERO MCP servers; a small
+// --system-prompt + fast --model + low --effort keep latency down. (--bare is
+// deliberately NOT used — it skips the settings that hold auth.)
+function runClaudeCli(prompt: string, model: string, effort: string): Promise<GitResult> {
   return new Promise((resolve) => {
     const args = [
       "-p",
@@ -38,7 +48,7 @@ function runClaudeCli(prompt, model, effort) {
       "claude",
       args,
       { encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES },
-      (error, stdout, stderr) => {
+      (error: any, stdout, stderr) => {
         const status = error
           ? typeof error.code === "number"
             ? error.code
@@ -50,14 +60,14 @@ function runClaudeCli(prompt, model, effort) {
   });
 }
 
-// callClaude(prompt, {runner, model, effort}) -> the model's text. `runner` is
-// injectable for tests; it returns { status, stdout, stderr }. The CLI's JSON
+// callClaude(prompt, {runner, model, effort}) -> the model's text. The CLI's JSON
 // wrapper is unwrapped to its `.result`; non-wrapper output is returned as-is.
 export async function callClaude(
-  prompt,
-  { runner, model = DEFAULT_MODEL, effort = DEFAULT_EFFORT } = {},
-) {
-  const invoke = runner ?? ((text) => runClaudeCli(text, model, effort));
+  prompt: string,
+  { runner, model = DEFAULT_MODEL, effort = DEFAULT_EFFORT }: CallClaudeOptions = {},
+): Promise<string> {
+  const invoke: ClaudeRunner =
+    runner ?? ((text) => runClaudeCli(text, model, effort));
   const result = await invoke(prompt);
   if (result.status !== 0) {
     throw new Error(

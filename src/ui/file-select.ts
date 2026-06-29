@@ -1,11 +1,28 @@
 // A multi-select file list used when hand-building your own commit.
 
-import { styles } from "./ansi.mjs";
+import { styles } from "./ansi.ts";
 
-// fileSelectReduce(state, key) -> { state } | { done, selected } | { done,
-// cancelled }. Pure multi-select over state { items: [{path, on}], cursor }.
-// space toggles, enter confirms (returns the checked paths), esc/ctrl-c cancel.
-export function fileSelectReduce({ items, cursor }, key) {
+export interface FileSelectItem {
+  path: string;
+  on: boolean;
+}
+
+export interface FileSelectState {
+  items: FileSelectItem[];
+  cursor: number;
+}
+
+export type FileSelectStep =
+  | { state: FileSelectState }
+  | { done: true; selected: string[] }
+  | { done: true; cancelled: true };
+
+// fileSelectReduce(state, key) -> the next step. space toggles, enter confirms
+// (returns the checked paths), esc/ctrl-c cancel.
+export function fileSelectReduce(
+  { items, cursor }: FileSelectState,
+  key: string,
+): FileSelectStep {
   const count = items.length;
   if (key === "escape" || key === "ctrl-c") {
     return { done: true, cancelled: true };
@@ -36,7 +53,10 @@ export function fileSelectReduce({ items, cursor }, key) {
 }
 
 // renderFileSelect(state, {color}) -> the file multi-select pane text.
-export function renderFileSelect({ items, cursor }, { color = true } = {}) {
+export function renderFileSelect(
+  { items, cursor }: FileSelectState,
+  { color = true }: { color?: boolean } = {},
+): string {
   const { invert, dim, accent, bold } = styles(color);
   const lines = [bold("Pick files for the new commit"), ""];
   items.forEach((item, index) => {

@@ -1,13 +1,21 @@
 // The in-picker settings pane: cycle model / effort / verbose.
 
-import { styles } from "./ansi.mjs";
+import { styles } from "./ansi.ts";
+import type { Settings } from "../types.ts";
 
 export const SETTING_MODELS = ["sonnet", "opus", "haiku"];
 export const SETTING_EFFORTS = ["low", "medium", "high"];
-const SETTING_FIELDS = ["model", "effort", "verbose"];
+const SETTING_FIELDS = ["model", "effort", "verbose"] as const;
+
+export interface SettingsPaneState {
+  settings: Settings;
+  cursor: number;
+}
+
+export type SettingsStep = { state: SettingsPaneState } | { done: true };
 
 // cycle(list, current, direction) -> the next/previous value, wrapping around.
-function cycle(list, current, direction) {
+function cycle(list: string[], current: string, direction: number): string {
   const currentIndex = list.indexOf(current);
   const nextIndex =
     ((currentIndex === -1 ? 0 : currentIndex) + direction + list.length) %
@@ -15,10 +23,12 @@ function cycle(list, current, direction) {
   return list[nextIndex];
 }
 
-// settingsReduce(state, key) -> { state } | { done }. Pure. state is
-// { settings: {model, effort, verbose}, cursor }. up/down pick a field, left/right
+// settingsReduce(state, key) -> the next step. up/down pick a field, left/right
 // change it (verbose toggles), esc/enter/c/q close.
-export function settingsReduce({ settings, cursor }, key) {
+export function settingsReduce(
+  { settings, cursor }: SettingsPaneState,
+  key: string,
+): SettingsStep {
   const fieldCount = SETTING_FIELDS.length;
   if (["escape", "enter", "ctrl-c", "c", "q"].includes(key)) {
     return { done: true };
@@ -44,9 +54,12 @@ export function settingsReduce({ settings, cursor }, key) {
 }
 
 // renderSettings(state, {color}) -> the settings pane text.
-export function renderSettings({ settings, cursor }, { color = true } = {}) {
+export function renderSettings(
+  { settings, cursor }: SettingsPaneState,
+  { color = true }: { color?: boolean } = {},
+): string {
   const { invert, dim, accent, bold } = styles(color);
-  const rows = [
+  const rows: [string, string][] = [
     ["model", settings.model],
     ["effort", settings.effort],
     ["verbose", settings.verbose ? "on" : "off"],

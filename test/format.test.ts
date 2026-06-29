@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { getChangedFiles, formatCommitMessage } from '../src/commit-message.mjs';
+import { getChangedFiles } from '../src/git/status.ts';
+import { formatCommitMessage } from '../src/core/message.ts';
 
 test('getChangedFiles parses modified and deleted, drops untracked', () => {
   const porcelain = ' M src/a.js\n D src/b.js\n?? new.txt\n';
@@ -10,11 +11,10 @@ test('getChangedFiles parses modified and deleted, drops untracked', () => {
   ]);
 });
 
-test('getChangedFiles expands a rename into old and new paths', () => {
+test('getChangedFiles keeps a rename as one entry keyed by the new path', () => {
   const porcelain = 'R  old.js -> new.js\n';
   assert.deepEqual(getChangedFiles(porcelain), [
-    { status: 'D', path: 'old.js' },
-    { status: 'A', path: 'new.js' },
+    { status: 'R', path: 'new.js', from: 'old.js' },
   ]);
 });
 

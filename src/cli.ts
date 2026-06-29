@@ -1,6 +1,14 @@
 // Command-line argument parsing and the --help text.
 
-export function parseArgs(argv) {
+export interface ParsedArgs {
+  dryRun: boolean;
+  apply: boolean;
+  help: boolean;
+  verbose: boolean;
+  model: string | null;
+}
+
+export function parseArgs(argv: string[]): ParsedArgs {
   const modelIndex = argv.indexOf("--model");
   return {
     dryRun: argv.includes("--dry-run"),

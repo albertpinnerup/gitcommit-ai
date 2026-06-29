@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPrompt, buildRewritePrompt } from '../src/prompt.mjs';
+import { buildPrompt, buildRewritePrompt } from '../src/ai/prompts.ts';
 
 test('buildRewritePrompt targets one commit\'s files and requests a single message', () => {
   const p = buildRewritePrompt({ files: ['src/a.js', 'src/b.js'], type: 'feat', subject: 'x' }, 'DIFFTEXT');

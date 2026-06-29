@@ -1,0 +1,23 @@
+// ANSI terminal styling helpers, shared by every screen the tool renders.
+
+const wrap = (code) => (text) => `\x1b[${code}m${text}\x1b[0m`;
+
+// styles(useColor) -> named styling functions. When useColor is false they pass
+// the text through unchanged, which keeps rendered output assertable in tests.
+export function styles(useColor = true) {
+  const style = (code) => (useColor ? wrap(code) : (text) => text);
+  return {
+    invert: style("7"),
+    dim: style("2"),
+    accent: style("36"),
+    bold: style("1"),
+  };
+}
+
+// clampToWidth(text, width) -> text truncated to `width` columns with a trailing
+// ellipsis. A falsy width means "no limit". Used so long lines never wrap (a
+// wrapped line would desync the cursor-based redraw of the picker).
+export function clampToWidth(text, width) {
+  if (!width || text.length <= width) return text;
+  return text.slice(0, Math.max(0, width - 1)) + "…";
+}

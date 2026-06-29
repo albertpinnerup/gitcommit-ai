@@ -37,6 +37,25 @@ test('renderReview marks the focused commit and shows the legend', () => {
   assert.match(text, /quit/i);
 });
 
+test('renderReview truncates long lines to width so they never wrap', () => {
+  const long = { commits: [{ files: ['x'], type: 'feat', subject: 'x'.repeat(200) }], cursor: 0, committed: [] };
+  const text = renderReview(long, { color: false, width: 40 });
+  for (const line of text.split('\n')) {
+    assert.ok(line.length <= 40, `line exceeds width: ${line.length}`);
+  }
+  assert.match(text, /…/); // truncation marker present
+});
+
+test('renderReview windows a long list to height and keeps the cursor visible', () => {
+  const commits = Array.from({ length: 40 }, (_, i) => ({ files: [`f${i}.js`], type: 'feat', subject: `commit ${i}` }));
+  const text = renderReview({ commits, cursor: 20, committed: [] }, { color: false, width: 80, height: 12 });
+  const lines = text.split('\n');
+  assert.ok(lines.length <= 12, `panel taller than height: ${lines.length}`);
+  assert.match(text, /feat: commit 20/);  // focused commit is on screen
+  assert.match(text, /↑ \d+ more/);        // hidden-above indicator
+  assert.match(text, /↓ \d+ more/);        // hidden-below indicator
+});
+
 test('renderReview shows committed progress', () => {
   const text = renderReview(
     { commits: [PLAN.commits[1]], cursor: 0, committed: [{ subject: 'add a', files: ['a.js'] }] },

@@ -303,25 +303,55 @@ export function decodeKeys(s) {
 
 const LEGEND = '↑/↓ move · enter accept · a accept all · s skip · e edit · q quit';
 
-// renderReview(state, {color}) -> the full panel text (no cursor moves). state is
-// { commits, cursor, committed }. The focused commit gets a marker + inverse video.
-export function renderReview({ commits, cursor, committed }, { color = true } = {}) {
+// renderReview(state, {color, width, height}) -> the full panel text (no cursor
+// moves). state is { commits, cursor, committed }. The focused commit gets a
+// marker + inverse video. Lines are truncated to `width` so they never wrap (a
+// wrapped line would desync any cursor-based redraw), and the commit list is
+// windowed to `height` so the panel always fits the viewport with the focused
+// commit visible. width/height omitted -> no truncation/windowing (tests).
+export function renderReview({ commits, cursor, committed }, { color = true, width, height } = {}) {
   const inv = color ? (s) => `\x1b[7m${s}\x1b[0m` : (s) => s;
   const dim = color ? (s) => `\x1b[2m${s}\x1b[0m` : (s) => s;
   const accent = color ? (s) => `\x1b[36m${s}\x1b[0m` : (s) => s;
-  const lines = [];
+  // Clip raw (un-styled) text to the available columns, then style it.
+  const clip = (s, indent = 0) => {
+    const w = width ? width - indent : 0;
+    return w && s.length > w ? s.slice(0, Math.max(0, w - 1)) + '…' : s;
+  };
+
+  const head = [];
   if (committed.length) {
-    lines.push(dim(`✓ committed ${committed.length}: ${committed.map((c) => c.subject).join(', ')}`));
+    head.push(dim(clip(`✓ committed ${committed.length}: ${committed.map((c) => c.subject).join(', ')}`)));
   }
-  commits.forEach((c, i) => {
+  const footer = ['', dim(clip(LEGEND))];
+
+  const blocks = commits.map((c, i) => {
     const focused = i === cursor;
-    const head = formatCommitMessage(c).split('\n')[0];
-    const marker = focused ? accent('❯ ') : '  ';
-    lines.push(marker + (focused ? inv(` ${head} `) : ` ${head} `));
-    lines.push('     ' + dim('files: ' + c.files.join(', ')));
+    const h = clip(formatCommitMessage(c).split('\n')[0], 4);
+    const f = clip('files: ' + c.files.join(', '), 5);
+    const headRow = (focused ? accent('❯ ') : '  ') + (focused ? inv(` ${h} `) : ` ${h} `);
+    return [headRow, '     ' + dim(f)];
   });
-  lines.push('');
-  lines.push(dim(LEGEND));
+
+  // Window the list to fit `height`, keeping the focused commit on screen.
+  let shown = blocks, above = 0, below = 0;
+  if (height) {
+    const avail = Math.max(2, height - head.length - footer.length);
+    const maxBlocks = Math.max(1, Math.floor(avail / 2) - 1); // -1 leaves room for ↑/↓ hints
+    if (blocks.length > maxBlocks) {
+      let start = cursor - Math.floor(maxBlocks / 2);
+      start = Math.max(0, Math.min(start, blocks.length - maxBlocks));
+      shown = blocks.slice(start, start + maxBlocks);
+      above = start;
+      below = blocks.length - (start + maxBlocks);
+    }
+  }
+
+  const lines = [...head];
+  if (above) lines.push(dim(`  ↑ ${above} more`));
+  for (const b of shown) lines.push(...b);
+  if (below) lines.push(dim(`  ↓ ${below} more`));
+  lines.push(...footer);
   return lines.join('\n');
 }
 
@@ -329,19 +359,19 @@ export function renderReview({ commits, cursor, committed }, { color = true } = 
 // arrow-key gate. nextKey()/readLine() are injectable so the loop is testable
 // without raw-mode stdin. Commits happen incrementally via executeOne.
 export async function interactiveReview(plan, {
-  nextKey, readLine, output, runGit: git = runGit, color = true,
+  nextKey, readLine, output, runGit: git = runGit, color = true, width, height,
 } = {}) {
   const out = output ?? process.stdout;
   let commits = plan.commits.slice();
   let cursor = 0;
   const committed = [];
-  let prevLines = 0;
 
+  // Redraw by homing the cursor and clearing to end of screen, then reprinting.
+  // Robust against shrinking content and (with width-clipping in renderReview)
+  // against line wrapping. Pairs with the alt-screen buffer the driver sets up.
   const draw = () => {
-    const text = renderReview({ commits, cursor, committed }, { color });
-    if (prevLines > 0) out.write(`\x1b[${prevLines}A\x1b[0J`);
-    out.write(text + '\n');
-    prevLines = text.split('\n').length;
+    const text = renderReview({ commits, cursor, committed }, { color, width, height });
+    out.write('\x1b[H\x1b[J' + text + '\n');
   };
 
   const commitAt = (i) => {
@@ -385,6 +415,7 @@ function makeRawKeyDriver(input = process.stdin, output = process.stdout) {
   if (input.setRawMode) input.setRawMode(true);
   input.resume();
   input.setEncoding('utf8');
+  output.write('\x1b[?1049h\x1b[?25l'); // enter alt screen, hide cursor
 
   const queue = [];
   const waiters = [];
@@ -404,9 +435,11 @@ function makeRawKeyDriver(input = process.stdin, output = process.stdout) {
   const readLine = (promptText) => new Promise((res) => {
     input.removeListener('data', onData);
     if (input.setRawMode) input.setRawMode(false);
+    output.write('\x1b[H\x1b[J\x1b[?25h'); // clear panel, show cursor for typing
     const rl = createInterface({ input, output });
     rl.question(promptText, (ans) => {
       rl.close();
+      output.write('\x1b[?25l'); // hide cursor again
       if (input.setRawMode) input.setRawMode(true);
       input.on('data', onData);
       res(ans);
@@ -415,6 +448,7 @@ function makeRawKeyDriver(input = process.stdin, output = process.stdout) {
 
   const close = () => {
     input.removeListener('data', onData);
+    output.write('\x1b[?25h\x1b[?1049l'); // show cursor, leave alt screen
     if (input.setRawMode) input.setRawMode(wasRaw);
     input.pause();
   };
@@ -491,10 +525,11 @@ export async function main(argv, deps = {}) {
       const driver = deps.nextKey
         ? { nextKey: deps.nextKey, readLine: deps.readLine ?? (async () => ''), close: () => {} }
         : makeRawKeyDriver(process.stdin, process.stdout);
+      const dims = deps.nextKey ? {} : { width: process.stdout.columns || 80, height: process.stdout.rows || 24 };
       try {
         committed = (await interactiveReview(plan, {
           nextKey: driver.nextKey, readLine: driver.readLine,
-          output: out, runGit: git, color: !process.env.NO_COLOR,
+          output: out, runGit: git, color: !process.env.NO_COLOR, ...dims,
         })).committed;
       } finally {
         driver.close();

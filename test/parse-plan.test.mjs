@@ -1,6 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractJson, validatePlan, parsePlan } from '../gitcommit-ai.mjs';
+import { extractJson, validatePlan, parsePlan, parseMessage } from '../gitcommit-ai.mjs';
+
+test('parseMessage extracts a single validated message', () => {
+  const m = parseMessage('{"type":"feat","scope":"cli","subject":"add flag","body":"why"}');
+  assert.deepEqual(m, { type: 'feat', scope: 'cli', subject: 'add flag', body: 'why' });
+});
+
+test('parseMessage omits empty scope/body and trims subject', () => {
+  assert.deepEqual(parseMessage('{"type":"fix","subject":"  bug  ","body":""}'), { type: 'fix', subject: 'bug' });
+});
+
+test('parseMessage rejects an invalid type or missing subject', () => {
+  assert.throws(() => parseMessage('{"type":"banana","subject":"x"}'), /type/i);
+  assert.throws(() => parseMessage('{"type":"feat","subject":""}'), /subject/i);
+});
 
 test('extractJson strips code fences and surrounding prose', () => {
   const text = 'Sure!\n```json\n{"commits":[]}\n```\nDone.';

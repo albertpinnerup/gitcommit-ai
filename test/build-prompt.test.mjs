@@ -1,6 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPrompt } from '../gitcommit-ai.mjs';
+import { buildPrompt, buildRewritePrompt } from '../gitcommit-ai.mjs';
+
+test('buildRewritePrompt targets one commit\'s files and requests a single message', () => {
+  const p = buildRewritePrompt({ files: ['src/a.js', 'src/b.js'], type: 'feat', subject: 'x' }, 'DIFFTEXT');
+  assert.match(p, /src\/a\.js/);
+  assert.match(p, /src\/b\.js/);
+  assert.match(p, /DIFFTEXT/);
+  assert.match(p, /"subject"/);          // single-message JSON shape
+  assert.doesNotMatch(p, /"commits"/);   // not a full plan
+  assert.match(p, /Do NOT include a body/i);
+});
+
+test('buildRewritePrompt asks for a body when verbose', () => {
+  const p = buildRewritePrompt({ files: ['a.js'] }, 'd', { verbose: true });
+  assert.match(p, /Include a short body/i);
+});
 
 test('buildPrompt includes diff, file paths, log, and JSON instructions', () => {
   const prompt = buildPrompt({

@@ -7,13 +7,15 @@ const FAKE_COLLECT = () => ({ diff: 'd', files: [{ status: 'M', path: 'a.js' }],
 const FAKE_CLAUDE = () => JSON.stringify({ commits: [{ files: ['a.js'], type: 'feat', subject: 'add a' }] });
 
 test('parseArgs reads flags', () => {
-  assert.deepEqual(parseArgs([]), { dryRun: false, yes: false, help: false, body: false, model: null });
-  assert.deepEqual(parseArgs(['--dry-run']), { dryRun: true, yes: false, help: false, body: false, model: null });
-  assert.deepEqual(parseArgs(['--yes']), { dryRun: false, yes: true, help: false, body: false, model: null });
+  assert.deepEqual(parseArgs([]), { dryRun: false, yes: false, help: false, verbose: false, model: null });
+  assert.deepEqual(parseArgs(['--dry-run']), { dryRun: true, yes: false, help: false, verbose: false, model: null });
+  assert.deepEqual(parseArgs(['--yes']), { dryRun: false, yes: true, help: false, verbose: false, model: null });
   assert.equal(parseArgs(['-h']).help, true);
   assert.equal(parseArgs(['--help']).help, true);
   assert.equal(parseArgs(['--model', 'haiku']).model, 'haiku');
-  assert.equal(parseArgs(['--body']).body, true);
+  assert.equal(parseArgs(['-v']).verbose, true);
+  assert.equal(parseArgs(['--verbose']).verbose, true);
+  assert.equal(parseArgs(['--body']).verbose, true); // back-compat alias
   assert.equal(parseArgs([]).model, null);
 });
 

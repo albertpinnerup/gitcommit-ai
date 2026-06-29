@@ -2,8 +2,10 @@
 
 import { spawnSync, execFile } from "node:child_process";
 import { createInterface } from "node:readline";
-import { realpathSync } from "node:fs";
+import { realpathSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { homedir } from "node:os";
+import { join, dirname } from "node:path";
 
 // ---------------------------------------------------------------------------
 // arg parsing
@@ -15,20 +17,26 @@ export function parseArgs(argv) {
     dryRun: argv.includes("--dry-run"),
     yes: argv.includes("--yes"),
     help: argv.includes("-h") || argv.includes("--help"),
-    body: argv.includes("--body"),
+    verbose:
+      argv.includes("-v") ||
+      argv.includes("--verbose") ||
+      argv.includes("--body"),
     model: mi !== -1 ? (argv[mi + 1] ?? null) : null,
   };
 }
 
 const HELP = `commit — group tracked changes into logical commits via Claude
 
-Usage: commit [--dry-run] [--yes] [--body] [--model <m>] [-h|--help]
+Usage: commit [--dry-run] [--yes] [-v|--verbose] [--model <m>] [-h|--help]
 
-  --dry-run     Show the plan and the git commands that would run; change nothing.
-  --yes         Skip the review gate and execute the proposed plan.
-  --body        Let Claude add commit bodies (default: subject-only, faster).
-  --model <m>   Model for planning (default: sonnet; or set COMMIT_MODEL).
-  -h, --help    Show this help.`;
+  --dry-run        Show the plan and the git commands that would run; change nothing.
+  --yes            Skip the review gate and execute the proposed plan.
+  -v, --verbose    Add a short body to each commit (default: subject-only, faster).
+  --model <m>      Model for planning (default: sonnet; or set COMMIT_MODEL).
+  -h, --help       Show this help.
+
+In the interactive picker you can also change the model/effort/verbose settings
+(c), regenerate all commits (r) or just the focused one (R) — no need to restart.`;
 
 // ---------------------------------------------------------------------------
 // plan extraction + validation
@@ -95,6 +103,22 @@ export function parsePlan(rawText, changedPaths) {
   return validatePlan(extractJson(rawText), changedPaths);
 }
 
+// parseMessage(rawText) -> a single validated commit message { type, scope?,
+// subject, body? }. Used when regenerating one commit's message (not a full plan).
+export function parseMessage(rawText) {
+  const m = extractJson(rawText);
+  if (!VALID_TYPES.includes(m.type)) {
+    throw new Error(`invalid commit type: ${JSON.stringify(m.type)}`);
+  }
+  if (typeof m.subject !== "string" || m.subject.trim() === "") {
+    throw new Error('message needs a non-empty "subject"');
+  }
+  const out = { type: m.type, subject: m.subject.trim() };
+  if (m.scope) out.scope = String(m.scope);
+  if (m.body && String(m.body).trim()) out.body = String(m.body).trim();
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // status parsing + message formatting
 // ---------------------------------------------------------------------------
@@ -149,8 +173,11 @@ export function buildPrompt({
     note = `\n…(diff truncated at ${maxDiffChars} chars — rely on the file list above for grouping)`;
   }
   const bodyRule = allowBody
-    ? '- Add a short body only when the "why" is not obvious from the subject.'
+    ? '- Include a short body (1-3 lines) in the "body" field for EVERY commit, explaining the why.'
     : '- Do NOT include a body — give a subject only and omit the "body" field.';
+  const shape = allowBody
+    ? '{ "files": ["path"], "type": "feat", "scope": "optional", "subject": "...", "body": "..." }'
+    : '{ "files": ["path"], "type": "feat", "scope": "optional", "subject": "..." }';
   return `You are a git commit planner. Group the following CHANGED FILES into one or
 more logical commits and write a Conventional Commits message for each.
 
@@ -167,7 +194,7 @@ for readability — your output must be MINIFIED on a single line, no markdown, 
 code fences, no extra whitespace):
 {
   "commits": [
-    { "files": ["path"], "type": "feat", "scope": "optional", "subject": "..." }
+    ${shape}
   ]
 }
 
@@ -179,6 +206,35 @@ ${log}
 
 DIFF:
 ${d}${note}
+`;
+}
+
+// buildRewritePrompt(commit, diff, {verbose, maxDiffChars}) -> prompt to rewrite a
+// SINGLE commit's message for its files (used by per-commit / messages-only regen).
+export function buildRewritePrompt(
+  commit,
+  diff,
+  { verbose = false, maxDiffChars = 12000 } = {},
+) {
+  let d = diff;
+  if (maxDiffChars && d.length > maxDiffChars) {
+    d = d.slice(0, maxDiffChars) + "\n…(diff truncated)";
+  }
+  const bodyRule = verbose
+    ? 'Include a short body (1-3 lines) in the "body" field explaining the why.'
+    : 'Do NOT include a body — give a subject only and omit the "body" field.';
+  return `Write a single Conventional Commits message for the change to THESE FILES:
+${commit.files.map((f) => "- " + f).join("\n")}
+
+Rules: type(scope): subject. Valid types: feat, fix, docs, style, refactor, perf,
+test, build, ci, chore, revert. Subject <= 72 chars, imperative, no trailing period.
+${bodyRule}
+
+Respond with ONLY minified JSON on a single line (no markdown, no code fences):
+{"type":"feat","scope":"optional","subject":"...","body":"optional"}
+
+DIFF (focus only on the files listed above):
+${d}
 `;
 }
 
@@ -456,8 +512,68 @@ export function editorReduce({ buf, pos }, key) {
   }
 }
 
+// Settings the user can cycle in the in-tool pane.
+export const SETTING_MODELS = ["sonnet", "opus", "haiku"];
+export const SETTING_EFFORTS = ["low", "medium", "high"];
+const SETTING_FIELDS = ["model", "effort", "verbose"];
+
+function cycle(list, val, dir) {
+  const i = list.indexOf(val);
+  const j = ((i === -1 ? 0 : i) + dir + list.length) % list.length;
+  return list[j];
+}
+
+// settingsReduce(state, key) -> { state } | { done }. Pure. state is
+// { settings: {model, effort, verbose}, cursor }. up/down pick a field, left/right
+// change it (verbose toggles), esc/enter/c/q close.
+export function settingsReduce({ settings, cursor }, key) {
+  const n = SETTING_FIELDS.length;
+  if (["escape", "enter", "ctrl-c", "c", "q"].includes(key))
+    return { done: true };
+  if (key === "up" || key === "k")
+    return { state: { settings, cursor: (cursor - 1 + n) % n } };
+  if (key === "down" || key === "j")
+    return { state: { settings, cursor: (cursor + 1) % n } };
+  if (key === "left" || key === "right") {
+    const dir = key === "right" ? 1 : -1;
+    const f = SETTING_FIELDS[cursor];
+    const next = { ...settings };
+    if (f === "model") next.model = cycle(SETTING_MODELS, settings.model, dir);
+    else if (f === "effort")
+      next.effort = cycle(SETTING_EFFORTS, settings.effort, dir);
+    else if (f === "verbose") next.verbose = !settings.verbose;
+    return { state: { settings: next, cursor } };
+  }
+  return { state: { settings, cursor } };
+}
+
+// renderSettings(state, {color}) -> the settings pane text.
+export function renderSettings({ settings, cursor }, { color = true } = {}) {
+  const inv = color ? (s) => `\x1b[7m${s}\x1b[0m` : (s) => s;
+  const dim = color ? (s) => `\x1b[2m${s}\x1b[0m` : (s) => s;
+  const accent = color ? (s) => `\x1b[36m${s}\x1b[0m` : (s) => s;
+  const bold = color ? (s) => `\x1b[1m${s}\x1b[0m` : (s) => s;
+  const rows = [
+    ["model", settings.model],
+    ["effort", settings.effort],
+    ["verbose", settings.verbose ? "on" : "off"],
+  ];
+  const lines = [bold("Settings"), ""];
+  rows.forEach(([k, v], i) => {
+    const focused = i === cursor;
+    const marker = focused ? accent("❯ ") : "  ";
+    const label = (k + ":").padEnd(9);
+    lines.push(marker + label + (focused ? inv(` ${v} `) : ` ${v} `));
+  });
+  lines.push("");
+  lines.push(
+    dim("↑/↓ field · ←/→ change · esc close — then r/R to regenerate"),
+  );
+  return lines.join("\n");
+}
+
 const LEGEND =
-  "↑/↓ move · enter accept · a accept all · s skip · e edit · q quit";
+  "↑/↓ move · enter accept · a all · e edit · s skip · r regen all · R regen one · c settings · q quit";
 
 // renderReview(state, {color, width, height}) -> the full panel text (no cursor
 // moves). state is { commits, cursor, committed }. The focused commit gets a
@@ -467,7 +583,7 @@ const LEGEND =
 // commit visible. width/height omitted -> no truncation/windowing (tests).
 export function renderReview(
   { commits, cursor, committed },
-  { color = true, width, height } = {},
+  { color = true, width, height, settings } = {},
 ) {
   const inv = color ? (s) => `\x1b[7m${s}\x1b[0m` : (s) => s;
   const dim = color ? (s) => `\x1b[2m${s}\x1b[0m` : (s) => s;
@@ -480,6 +596,15 @@ export function renderReview(
   };
 
   const head = [];
+  if (settings) {
+    head.push(
+      dim(
+        clip(
+          `settings: ${settings.model} · ${settings.effort} · ${settings.verbose ? "verbose" : "subject-only"}`,
+        ),
+      ),
+    );
+  }
   if (committed.length) {
     head.push(
       dim(
@@ -491,32 +616,51 @@ export function renderReview(
   }
   const footer = ["", dim(clip(LEGEND))];
 
-  const BLOCK_ROWS = 3; // label + message + files
+  // Each block: label row, subject row (highlighted when focused), any body
+  // lines (dimmed), then the files row. Body lines make blocks variable-height.
   const blocks = commits.map((c, i) => {
     const focused = i === cursor;
-    const h = clip(formatCommitMessage(c).split("\n")[0], 7); // 5-space indent + 2 pad spaces
-    const f = clip("files: " + c.files.join(", "), 5);
     const label = `Commit ${i + 1}`;
-    const labelRow =
-      (focused ? accent("❯ ") : "  ") + (focused ? bold(label) : dim(label));
-    const msgRow = "     " + (focused ? inv(` ${h} `) : ` ${h} `);
-    return [labelRow, msgRow, "     " + dim(f)];
+    const rows = [
+      (focused ? accent("❯ ") : "  ") + (focused ? bold(label) : dim(label)),
+    ];
+    const msgLines = formatCommitMessage(c).split("\n");
+    const subj = clip(msgLines[0], 7); // 5-space indent + 2 pad spaces
+    rows.push("     " + (focused ? inv(` ${subj} `) : ` ${subj} `));
+    for (const bl of msgLines.slice(1)) {
+      if (bl.trim() === "") continue; // skip the blank subject/body separator
+      rows.push("       " + dim(clip(bl, 7)));
+    }
+    rows.push("     " + dim(clip("files: " + c.files.join(", "), 5)));
+    return rows;
   });
 
-  // Window the list to fit `height`, keeping the focused commit on screen.
+  // Window the (variable-height) blocks to fit `height`, keeping the focused
+  // commit visible by greedily growing a window outward from the cursor.
   let shown = blocks,
     above = 0,
     below = 0;
   if (height) {
-    const avail = Math.max(BLOCK_ROWS, height - head.length - footer.length);
-    const maxBlocks = Math.max(1, Math.floor(avail / BLOCK_ROWS) - 1); // -1 leaves room for ↑/↓ hints
-    if (blocks.length > maxBlocks) {
-      let start = cursor - Math.floor(maxBlocks / 2);
-      start = Math.max(0, Math.min(start, blocks.length - maxBlocks));
-      shown = blocks.slice(start, start + maxBlocks);
-      above = start;
-      below = blocks.length - (start + maxBlocks);
+    const avail = Math.max(1, height - head.length - footer.length - 2); // -2 for ↑/↓ hints
+    const size = blocks.map((b) => b.length);
+    let start = cursor,
+      end = cursor + 1,
+      used = size[cursor];
+    for (;;) {
+      let grew = false;
+      if (end < blocks.length && used + size[end] <= avail) {
+        used += size[end++];
+        grew = true;
+      }
+      if (start > 0 && used + size[start - 1] <= avail) {
+        used += size[--start];
+        grew = true;
+      }
+      if (!grew) break;
     }
+    shown = blocks.slice(start, end);
+    above = start;
+    below = blocks.length - end;
   }
 
   const lines = [...head];
@@ -540,12 +684,16 @@ export async function interactiveReview(
     color = true,
     width,
     height,
+    settings = { model: DEFAULT_MODEL, effort: DEFAULT_EFFORT, verbose: false },
+    replan, // async (settings) -> plan | null   (full re-plan, may regroup)
+    regenerateCommit, // async (commit, settings) -> message | null  (one commit)
   } = {},
 ) {
   const out = output ?? process.stdout;
   const edit = readLine ?? (async (_p, init) => init); // no-op edit when not wired
   let commits = plan.commits.slice();
   let cursor = 0;
+  let conf = { ...settings };
   const committed = [];
 
   // Redraw by homing the cursor and clearing to end of screen, then reprinting.
@@ -554,15 +702,23 @@ export async function interactiveReview(
   const draw = () => {
     const text = renderReview(
       { commits, cursor, committed },
-      { color, width, height },
+      { color, width, height, settings: conf },
     );
     out.write("\x1b[H\x1b[J" + text + "\n");
   };
+  // Transient notice (model calls are slow); cleared by the next draw().
+  const notify = (msg) => out.write("\x1b[H\x1b[J" + msg + "\n");
 
   const commitAt = (i) => {
     committed.push(executeOne(commits[i], { runGit: git }));
     commits.splice(i, 1);
     if (cursor >= commits.length) cursor = Math.max(0, commits.length - 1);
+  };
+
+  // Replace a commit's message but keep its files (regenerated messages drop any
+  // prior header override).
+  const applyMessage = (i, msg) => {
+    if (msg) commits[i] = { ...msg, files: commits[i].files };
   };
 
   draw();
@@ -591,6 +747,60 @@ export async function interactiveReview(
         commitAt(cursor);
       } else if (key === "a") {
         while (commits.length) commitAt(0);
+      } else if (key === "c") {
+        // Settings sub-pane: stage changes; regeneration applies them.
+        let st = { settings: conf, cursor: 0 };
+        for (;;) {
+          out.write("\x1b[H\x1b[J" + renderSettings(st, { color }) + "\n");
+          const r = settingsReduce(st, await nextKey());
+          if (r.done) break;
+          st = r.state;
+        }
+        conf = st.settings;
+      } else if (key === "R" && regenerateCommit) {
+        out.write("\x1b[H\x1b[J");
+        // notify("  regenerating this commit…");
+        // applyMessage(cursor, await regenerateCommit(commits[cursor], conf));
+        applyMessage(
+          cursor,
+          await withStatus(
+            "regenerating this commit...",
+            () => regenerateCommit(commits[cursor], conf),
+            { stream: out },
+          ),
+        );
+      } else if (key === "r" && (replan || regenerateCommit)) {
+        notify(
+          "  regenerate all — [g] regroup · [m] messages only · esc cancel",
+        );
+        const choice = await nextKey();
+        if (choice === "g" && replan) {
+          out.write("\x1b[H\x1b[J");
+          // notify("  regenerating (regrouping)…");
+
+          const np = await withStatus(
+            "regenerating (regrouping)...",
+            () => replan(conf),
+            { stream: out },
+          );
+          // replan(conf);
+          if (np && np.commits.length) {
+            commits = np.commits.slice();
+            cursor = 0;
+          }
+        } else if (choice === "m" && regenerateCommit) {
+          for (let i = 0; i < commits.length; i++) {
+            out.write("\x1b[H\x1b[J");
+            applyMessage(
+              i,
+              await withStatus(
+                `regenerating message ${i + 1}/${commits.length}…`,
+                () => regenerateCommit(commits[i], conf),
+                { stream: out },
+              ),
+            );
+          }
+        }
       }
     } catch (e) {
       out.write(`\nerror: ${e.message}\n`);
@@ -598,7 +808,7 @@ export async function interactiveReview(
     }
     draw();
   }
-  return { committed };
+  return { committed, settings: conf };
 }
 
 // makeRawKeyDriver(input, output) -> {nextKey, readLine, close} backed by a real
@@ -697,6 +907,42 @@ export function execute(plan, { runGit: git = runGit } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// settings persistence
+// ---------------------------------------------------------------------------
+
+export const SETTINGS_PATH = join(
+  process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
+  "gitcommit-ai",
+  "settings.json",
+);
+
+// loadSettings(path) -> saved { model?, effort?, verbose? } or {} if absent/bad.
+export function loadSettings(path = SETTINGS_PATH) {
+  try {
+    const s = JSON.parse(readFileSync(path, "utf8"));
+    return s && typeof s === "object" ? s : {};
+  } catch {
+    return {};
+  }
+}
+
+// saveSettings(settings, path) -> true on success. Persists only the known keys
+// and never throws (a read-only config dir shouldn't break committing).
+export function saveSettings(settings, path = SETTINGS_PATH) {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const { model, effort, verbose } = settings;
+    writeFileSync(
+      path,
+      JSON.stringify({ model, effort, verbose }, null, 2) + "\n",
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -718,13 +964,52 @@ export async function main(argv, deps = {}) {
     return 0;
   }
 
-  const model = args.model || process.env.COMMIT_MODEL || DEFAULT_MODEL;
-  const effort = process.env.COMMIT_EFFORT || DEFAULT_EFFORT;
+  // Precedence: explicit CLI flag / env > saved settings > built-in default.
+  const saved = (deps.loadSettings ?? loadSettings)();
+  const model =
+    args.model || process.env.COMMIT_MODEL || saved.model || DEFAULT_MODEL;
+  const effort = process.env.COMMIT_EFFORT || saved.effort || DEFAULT_EFFORT;
+  const verbose = args.verbose || saved.verbose || false;
+  const settings0 = { model, effort, verbose };
   const doCollect = deps.collect ?? collect;
+  const collectArg = deps.runGit ? { runGit: deps.runGit } : undefined;
   const doClaude =
     deps.callClaude ?? ((prompt) => callClaude(prompt, { model, effort }));
   const git = deps.runGit ?? runGit;
   const statusStream = deps.statusStream ?? process.stderr;
+
+  // Run a prompt against the model using the live (possibly user-changed) settings.
+  const planWith = (prompt, s) =>
+    deps.callClaude
+      ? deps.callClaude(prompt)
+      : callClaude(prompt, { model: s.model, effort: s.effort });
+
+  // Re-plan from scratch with current settings (grouping may change).
+  const replan =
+    deps.replan ??
+    (async (s) => {
+      const c = doCollect(collectArg);
+      if (!c.files.length) return null;
+      const p = buildPrompt({
+        diff: c.diff,
+        files: c.files,
+        log: c.log,
+        allowBody: s.verbose,
+      });
+      return parsePlan(
+        await planWith(p, s),
+        c.files.map((f) => f.path),
+      );
+    });
+
+  // Rewrite one commit's message for its files (keeps grouping).
+  const regenerateCommit =
+    deps.regenerateCommit ??
+    (async (commit, s) => {
+      const c = doCollect(collectArg);
+      const p = buildRewritePrompt(commit, c.diff, { verbose: s.verbose });
+      return parseMessage(await planWith(p, s));
+    });
 
   try {
     const { diff, files, log } = doCollect(
@@ -735,7 +1020,7 @@ export async function main(argv, deps = {}) {
       return 0;
     }
 
-    const prompt = buildPrompt({ diff, files, log, allowBody: args.body });
+    const prompt = buildPrompt({ diff, files, log, allowBody: verbose });
     const startedAt = Date.now();
     const raw = await withStatus("planning commits", () => doClaude(prompt), {
       stream: statusStream,
@@ -749,7 +1034,9 @@ export async function main(argv, deps = {}) {
     if (statusStream.isTTY) {
       const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
       const n = plan.commits.length;
-      statusStream.write(`  planned ${n} commit${n === 1 ? "" : "s"} in ${secs}s\n`);
+      statusStream.write(
+        `  planned ${n} commit${n === 1 ? "" : "s"} in ${secs}s\n`,
+      );
     }
 
     out.write(renderPlan(plan) + "\n");
@@ -782,16 +1069,22 @@ export async function main(argv, deps = {}) {
             height: process.stdout.rows || 24,
           };
       try {
-        committed = (
-          await interactiveReview(plan, {
-            nextKey: driver.nextKey,
-            readLine: driver.readLine,
-            output: out,
-            runGit: git,
-            color: !process.env.NO_COLOR,
-            ...dims,
-          })
-        ).committed;
+        const result = await interactiveReview(plan, {
+          nextKey: driver.nextKey,
+          readLine: driver.readLine,
+          output: out,
+          runGit: git,
+          color: !process.env.NO_COLOR,
+          settings: settings0,
+          replan,
+          regenerateCommit,
+          ...dims,
+        });
+        committed = result.committed;
+        // Remember the settings as they stand for next time. Persist on real runs
+        // or when a test injects saveSettings; skip for injected-key runs otherwise.
+        const persist = deps.saveSettings ?? (deps.nextKey ? null : saveSettings);
+        if (persist) persist(result.settings);
       } finally {
         driver.close();
       }

@@ -4,7 +4,10 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { decodeKeys, editorReduce, renderReview, interactiveReview, executeOne } from '../gitcommit-ai.mjs';
+import {
+  decodeKeys, editorReduce, renderReview, interactiveReview, executeOne,
+  settingsReduce, renderSettings,
+} from '../gitcommit-ai.mjs';
 
 const PLAN = { commits: [
   { files: ['a.js'], type: 'feat', subject: 'add a' },
@@ -66,7 +69,8 @@ test('renderReview numbers commits and marks the focused one', () => {
   assert.ok(!c1.includes('❯'));
   assert.ok(c2.includes('❯'));
   assert.match(text, /enter accept/i);
-  assert.match(text, /accept all/i);
+  assert.match(text, /regen/i);
+  assert.match(text, /settings/i);
   assert.match(text, /quit/i);
 });
 
@@ -87,6 +91,14 @@ test('renderReview windows a long list to height and keeps the cursor visible', 
   assert.match(text, /feat: commit 20/);  // focused commit is on screen
   assert.match(text, /↑ \d+ more/);        // hidden-above indicator
   assert.match(text, /↓ \d+ more/);        // hidden-below indicator
+});
+
+test('renderReview shows the body lines of a verbose commit', () => {
+  const commits = [{ files: ['a.js'], type: 'feat', subject: 'add x', body: 'line one\nline two' }];
+  const text = renderReview({ commits, cursor: 0, committed: [] }, { color: false });
+  assert.match(text, /feat: add x/);
+  assert.match(text, /line one/);
+  assert.match(text, /line two/);
 });
 
 test('renderReview shows committed progress', () => {
@@ -157,6 +169,87 @@ test('interactiveReview: q with nothing committed returns empty', async () => {
   const res = await interactiveReview(PLAN, { nextKey: keys(['q']), output: sink(), runGit });
   assert.deepEqual(subjects, []);
   assert.equal(res.committed.length, 0);
+});
+
+// ---- settings pane ----------------------------------------------------------
+
+test('settingsReduce navigates fields and cycles values', () => {
+  let s = { settings: { model: 'sonnet', effort: 'low', verbose: false }, cursor: 0 };
+  s = settingsReduce(s, 'right').state;                 // model: sonnet -> opus
+  assert.equal(s.settings.model, 'opus');
+  s = settingsReduce(s, 'left').state;                  // back to sonnet
+  assert.equal(s.settings.model, 'sonnet');
+  s = settingsReduce(s, 'down').state;                  // focus effort
+  s = settingsReduce(s, 'right').state;                 // low -> medium
+  assert.equal(s.settings.effort, 'medium');
+  s = settingsReduce(s, 'down').state;                  // focus verbose
+  s = settingsReduce(s, 'right').state;                 // toggle on
+  assert.equal(s.settings.verbose, true);
+  assert.equal(settingsReduce(s, 'escape').done, true); // esc closes
+  assert.equal(settingsReduce(s, 'enter').done, true);
+});
+
+test('renderSettings shows fields, focus marker, and a hint', () => {
+  const text = renderSettings({ settings: { model: 'opus', effort: 'high', verbose: true }, cursor: 1 }, { color: false });
+  assert.match(text, /model:.*opus/);
+  assert.match(text, /effort:.*high/);
+  assert.match(text, /verbose:.*on/);
+  const effortLine = text.split('\n').find((l) => l.includes('effort'));
+  assert.ok(effortLine.includes('❯'));   // cursor on effort row
+});
+
+test('renderReview shows current settings when provided', () => {
+  const text = renderReview(
+    { commits: PLAN.commits, cursor: 0, committed: [] },
+    { color: false, settings: { model: 'opus', effort: 'low', verbose: true } },
+  );
+  assert.match(text, /settings: opus · low · verbose/);
+});
+
+// ---- regeneration -----------------------------------------------------------
+
+test('interactiveReview: R regenerates the focused commit, keeping its files', async () => {
+  const { runGit, subjects } = fakeGit();
+  let askedFor;
+  const regenerateCommit = async (commit) => { askedFor = commit.files; return { type: 'refactor', subject: 'reworked a' }; };
+  await interactiveReview(PLAN, {
+    nextKey: keys(['R', 'enter', 'q']), output: sink(), runGit, regenerateCommit,
+  });
+  assert.deepEqual(askedFor, ['a.js']);          // regen was asked about the focused commit's files
+  assert.deepEqual(subjects, ['refactor: reworked a']); // new message committed
+});
+
+test('interactiveReview: r then g re-plans (regroup) via replan', async () => {
+  const { runGit, subjects } = fakeGit();
+  const replan = async () => ({ commits: [{ files: ['a.js', 'b.js'], type: 'feat', subject: 'merged' }] });
+  await interactiveReview(PLAN, {
+    nextKey: keys(['r', 'g', 'a']), output: sink(), runGit, replan,
+  });
+  assert.deepEqual(subjects, ['feat: merged']);  // regrouped into one commit, then accept-all
+});
+
+test('interactiveReview: r then m rewrites each message, keeping grouping', async () => {
+  const { runGit, subjects } = fakeGit();
+  let calls = 0;
+  const regenerateCommit = async (commit) => { calls++; return { type: 'chore', subject: `redone ${commit.files[0]}` }; };
+  await interactiveReview(PLAN, {
+    nextKey: keys(['r', 'm', 'a']), output: sink(), runGit, regenerateCommit,
+  });
+  assert.equal(calls, 2);                         // both commits' messages regenerated
+  assert.deepEqual(subjects, ['chore: redone a.js', 'chore: redone b.js']);
+});
+
+test('interactiveReview: c opens settings, change flows into regeneration', async () => {
+  const { runGit } = fakeGit();
+  let seenVerbose;
+  const regenerateCommit = async (_c, s) => { seenVerbose = s.verbose; return { type: 'fix', subject: 'x' }; };
+  // c -> focus verbose (down,down) -> toggle (right) -> close (esc) -> R regen -> q
+  await interactiveReview(PLAN, {
+    nextKey: keys(['c', 'down', 'down', 'right', 'escape', 'R', 'q']),
+    output: sink(), runGit, regenerateCommit,
+    settings: { model: 'sonnet', effort: 'low', verbose: false },
+  });
+  assert.equal(seenVerbose, true);  // the toggled setting reached the regen callback
 });
 
 // ---- executeOne against a real repo ------------------------------------------

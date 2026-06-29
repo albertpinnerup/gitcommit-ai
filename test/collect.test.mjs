@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { collect, assertRepoState } from '../gitcommit-ai.mjs';
+import { collect, assertRepoState } from '../src/git.mjs';
 
 function makeRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'gca-'));

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderPlan, reviewGate } from '../gitcommit-ai.mjs';
+import { renderPlan, reviewGate } from '../src/review.mjs';
 
 function lineSource(lines) {
   let i = 0;

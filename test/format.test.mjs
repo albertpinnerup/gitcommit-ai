@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { getChangedFiles, formatCommitMessage } from '../gitcommit-ai.mjs';
+import { getChangedFiles, formatCommitMessage } from '../src/commit-message.mjs';
 
 test('getChangedFiles parses modified and deleted, drops untracked', () => {
   const porcelain = ' M src/a.js\n D src/b.js\n?? new.txt\n';

@@ -4,10 +4,11 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import {
-  decodeKeys, editorReduce, renderReview, interactiveReview, executeOne,
-  settingsReduce, renderSettings, fileSelectReduce, renderFileSelect,
-} from '../gitcommit-ai.mjs';
+import { decodeKeys, editorReduce } from '../src/keys.mjs';
+import { renderReview, interactiveReview } from '../src/review.mjs';
+import { executeOne } from '../src/git.mjs';
+import { settingsReduce, renderSettings } from '../src/settings-pane.mjs';
+import { fileSelectReduce, renderFileSelect } from '../src/file-select.mjs';
 
 const PLAN = { commits: [
   { files: ['a.js'], type: 'feat', subject: 'add a' },
@@ -36,23 +37,23 @@ test('decodeKeys maps backspace, escape, home, and end', () => {
 });
 
 test('editorReduce inserts, backspaces, and moves the cursor', () => {
-  let s = { buf: 'add a', pos: 5 };
+  let s = { text: 'add a', cursor: 5 };
   s = editorReduce(s, 'backspace').state;          // 'add '
-  assert.deepEqual(s, { buf: 'add ', pos: 4 });
+  assert.deepEqual(s, { text: 'add ', cursor: 4 });
   s = editorReduce(s, 'b').state;                  // 'add b'
-  assert.deepEqual(s, { buf: 'add b', pos: 5 });
+  assert.deepEqual(s, { text: 'add b', cursor: 5 });
   s = editorReduce(s, 'home').state;
-  assert.equal(s.pos, 0);
+  assert.equal(s.cursor, 0);
   s = editorReduce(s, 'right').state;
-  assert.equal(s.pos, 1);
-  s = editorReduce(s, 'X').state;                  // insert at pos 1 -> 'aXdd b'
-  assert.deepEqual(s, { buf: 'aXdd b', pos: 2 });
+  assert.equal(s.cursor, 1);
+  s = editorReduce(s, 'X').state;                  // insert at cursor 1 -> 'aXdd b'
+  assert.deepEqual(s, { text: 'aXdd b', cursor: 2 });
 });
 
 test('editorReduce: enter accepts, escape and ctrl-c cancel', () => {
-  assert.deepEqual(editorReduce({ buf: 'hi', pos: 2 }, 'enter'), { done: true, value: 'hi' });
-  assert.equal(editorReduce({ buf: 'hi', pos: 2 }, 'escape').cancelled, true);
-  assert.equal(editorReduce({ buf: 'hi', pos: 2 }, 'ctrl-c').cancelled, true);
+  assert.deepEqual(editorReduce({ text: 'hi', cursor: 2 }, 'enter'), { done: true, value: 'hi' });
+  assert.equal(editorReduce({ text: 'hi', cursor: 2 }, 'escape').cancelled, true);
+  assert.equal(editorReduce({ text: 'hi', cursor: 2 }, 'ctrl-c').cancelled, true);
 });
 
 // ---- renderReview ------------------------------------------------------------

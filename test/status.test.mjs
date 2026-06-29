@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FRAMES, statusLine, withStatus } from '../gitcommit-ai.mjs';
+import { FRAMES, statusLine, withStatus } from '../src/status-bar.mjs';
 
 test('FRAMES is a non-empty spinner array', () => {
   assert.ok(Array.isArray(FRAMES) && FRAMES.length > 0);

@@ -1,6 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractJson, validatePlan, parsePlan, parseMessage } from '../gitcommit-ai.mjs';
+import { extractJson, validatePlan, parsePlan, parseMessage, repairPlan } from '../src/plan.mjs';
+
+test('repairPlan keeps a duplicated file in its first commit and drops emptied commits', () => {
+  const plan = { commits: [
+    { files: ['a.js', 'shared.js'], type: 'feat', subject: 'a' },
+    { files: ['shared.js'], type: 'test', subject: 'b' },        // dup -> becomes empty -> dropped
+    { files: ['c.js'], type: 'docs', subject: 'c' },
+  ]};
+  const repaired = repairPlan(plan);
+  assert.deepEqual(repaired.commits.map((commit) => commit.files), [['a.js', 'shared.js'], ['c.js']]);
+});
+
+test('parsePlan no longer throws when a file is listed in two commits', () => {
+  const raw = JSON.stringify({ commits: [
+    { files: ['big.js'], type: 'feat', subject: 'feature' },
+    { files: ['big.js'], type: 'test', subject: 'tests' },
+  ]});
+  const plan = parsePlan(raw, ['big.js']);
+  assert.equal(plan.commits.length, 1);
+  assert.deepEqual(plan.commits[0].files, ['big.js']);
+});
 
 test('parseMessage extracts a single validated message', () => {
   const m = parseMessage('{"type":"feat","scope":"cli","subject":"add flag","body":"why"}');

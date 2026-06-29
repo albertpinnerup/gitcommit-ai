@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { callClaude } from '../gitcommit-ai.mjs';
+import { callClaude } from '../src/claude.mjs';
 
 test('callClaude returns .result from the wrapper JSON', async () => {
   const runner = () => ({ status: 0, stdout: JSON.stringify({ result: 'MODEL_TEXT' }), stderr: '' });

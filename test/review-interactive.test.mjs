@@ -93,6 +93,12 @@ test('renderReview windows a long list to height and keeps the cursor visible', 
   assert.match(text, /↓ \d+ more/);        // hidden-below indicator
 });
 
+test('renderReview with an empty commit list and a height shows no negative hints', () => {
+  const text = renderReview({ commits: [], cursor: 0, committed: [{ subject: 'feat: x', files: ['a'] }] }, { color: false, width: 80, height: 20 });
+  assert.doesNotMatch(text, /-\d+ more/);
+  assert.doesNotMatch(text, /↓ -/);
+});
+
 test('renderReview shows the body lines of a verbose commit', () => {
   const commits = [{ files: ['a.js'], type: 'feat', subject: 'add x', body: 'line one\nline two' }];
   const text = renderReview({ commits, cursor: 0, committed: [] }, { color: false });
@@ -162,6 +168,58 @@ test('interactiveReview: cancelling an edit (null) keeps the original message', 
   const readLine = async () => null;              // user pressed esc
   await interactiveReview(PLAN, { nextKey: keys(['e', 'enter', 'q']), readLine, output: sink(), runGit });
   assert.deepEqual(subjects, ['feat: add a']);    // unchanged
+});
+
+// Capture the full `git commit` arg list (subject + optional body) per commit.
+function commitArgsRecorder() {
+  const calls = [];
+  const runGit = (args) => {
+    if (args[0] === 'commit') calls.push(args.slice(1));
+    return { status: 0, stdout: '', stderr: '' };
+  };
+  return { runGit, calls };
+}
+
+test('interactiveReview: E adds a body to a subject-only commit', async () => {
+  const { runGit, calls } = commitArgsRecorder();
+  let seenInitial;
+  const readLine = async (_p, initial) => { seenInitial = initial; return 'because reasons'; };
+  await interactiveReview(
+    { commits: [{ files: ['a.js'], type: 'feat', subject: 'add a' }] },
+    { nextKey: keys(['E', 'enter', 'q']), readLine, output: sink(), runGit },
+  );
+  assert.equal(seenInitial, '');  // no prior body
+  assert.deepEqual(calls[0], ['-m', 'feat: add a', '-m', 'because reasons']);
+});
+
+test('interactiveReview: E pre-fills an existing body with literal \\n and restores newlines', async () => {
+  const { runGit, calls } = commitArgsRecorder();
+  let seenInitial;
+  const readLine = async (_p, initial) => { seenInitial = initial; return 'one\\ntwo'; };
+  await interactiveReview(
+    { commits: [{ files: ['a.js'], type: 'feat', subject: 'x', body: 'old one\nold two' }] },
+    { nextKey: keys(['E', 'enter', 'q']), readLine, output: sink(), runGit },
+  );
+  assert.equal(seenInitial, 'old one\\nold two');           // existing body shown single-line
+  assert.deepEqual(calls[0], ['-m', 'feat: x', '-m', 'one\ntwo']); // \n converted to real newline
+});
+
+test('interactiveReview: E with empty input clears the body', async () => {
+  const { runGit, calls } = commitArgsRecorder();
+  await interactiveReview(
+    { commits: [{ files: ['a.js'], type: 'feat', subject: 'x', body: 'remove me' }] },
+    { nextKey: keys(['E', 'enter', 'q']), readLine: async () => '', output: sink(), runGit },
+  );
+  assert.deepEqual(calls[0], ['-m', 'feat: x']); // no -m body
+});
+
+test('interactiveReview: E cancel (null) keeps the existing body', async () => {
+  const { runGit, calls } = commitArgsRecorder();
+  await interactiveReview(
+    { commits: [{ files: ['a.js'], type: 'feat', subject: 'x', body: 'keep me' }] },
+    { nextKey: keys(['E', 'enter', 'q']), readLine: async () => null, output: sink(), runGit },
+  );
+  assert.deepEqual(calls[0], ['-m', 'feat: x', '-m', 'keep me']);
 });
 
 test('interactiveReview: q with nothing committed returns empty', async () => {

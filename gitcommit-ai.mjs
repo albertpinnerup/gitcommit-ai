@@ -15,7 +15,7 @@ export function parseArgs(argv) {
   const mi = argv.indexOf("--model");
   return {
     dryRun: argv.includes("--dry-run"),
-    yes: argv.includes("--yes"),
+    apply: argv.includes("--apply") || argv.includes("-a"),
     help: argv.includes("-h") || argv.includes("--help"),
     verbose:
       argv.includes("-v") ||
@@ -27,10 +27,10 @@ export function parseArgs(argv) {
 
 const HELP = `commit — group tracked changes into logical commits via Claude
 
-Usage: commit [--dry-run] [--yes] [-v|--verbose] [--model <m>] [-h|--help]
+Usage: commit [--dry-run] [-a | --apply] [-v | --verbose] [--model <m>] [-h | --help]
 
   --dry-run        Show the plan and the git commands that would run; change nothing.
-  --yes            Skip the review gate and execute the proposed plan.
+  -a, --apply          Skip the review gate and execute the proposed plan.
   -v, --verbose    Add a short body to each commit (default: subject-only, faster).
   --model <m>      Model for planning (default: sonnet; or set COMMIT_MODEL).
   -h, --help       Show this help.
@@ -398,9 +398,9 @@ export function renderPlan(plan) {
     .join("\n\n");
 }
 
-export async function reviewGate(plan, { input, output, autoYes } = {}) {
+export async function reviewGate(plan, { input, output, autoApply } = {}) {
   const out = output ?? process.stdout;
-  if (autoYes) return plan;
+  if (autoApply) return plan;
   let commits = plan.commits.slice();
   for (;;) {
     out.write("\n" + renderPlan({ commits }) + "\n");
@@ -573,7 +573,7 @@ export function renderSettings({ settings, cursor }, { color = true } = {}) {
 }
 
 const LEGEND =
-  "↑/↓ move · enter accept · a all · e edit · s skip · r regen all · R regen one · c settings · q quit";
+  "↑/↓ move · enter accept · a all · e msg · E body · s skip · r regen all · R regen one · c settings · q quit";
 
 // renderReview(state, {color, width, height}) -> the full panel text (no cursor
 // moves). state is { commits, cursor, committed }. The focused commit gets a
@@ -640,7 +640,7 @@ export function renderReview(
   let shown = blocks,
     above = 0,
     below = 0;
-  if (height) {
+  if (height && blocks.length > 0) {
     const avail = Math.max(1, height - head.length - footer.length - 2); // -2 for ↑/↓ hints
     const size = blocks.map((b) => b.length);
     let start = cursor,
@@ -743,6 +743,19 @@ export async function interactiveReview(
         );
         if (edited != null && edited.trim())
           commits[cursor] = { ...commits[cursor], header: edited.trim() };
+      } else if (key === "E") {
+        // Edit the body. The editor is single-line, so newlines are shown/typed
+        // as a literal "\n" and converted back on save. Empty input clears the
+        // body; null (esc) cancels.
+        const current = (commits[cursor].body || "").replace(/\n/g, "\\n");
+        const edited = await edit(
+          "  edit body — \\n for line break (enter save · esc cancel): ",
+          current,
+        );
+        if (edited != null) {
+          const body = edited.replace(/\\n/g, "\n").trim();
+          commits[cursor] = { ...commits[cursor], body: body || undefined };
+        }
       } else if (key === "enter") {
         commitAt(cursor);
       } else if (key === "a") {
@@ -1048,7 +1061,7 @@ export async function main(argv, deps = {}) {
     }
 
     let committed;
-    if (args.yes) {
+    if (args.apply) {
       committed = execute(plan, { runGit: git }).committed;
     } else if (
       deps.nextKey ||
@@ -1083,7 +1096,8 @@ export async function main(argv, deps = {}) {
         committed = result.committed;
         // Remember the settings as they stand for next time. Persist on real runs
         // or when a test injects saveSettings; skip for injected-key runs otherwise.
-        const persist = deps.saveSettings ?? (deps.nextKey ? null : saveSettings);
+        const persist =
+          deps.saveSettings ?? (deps.nextKey ? null : saveSettings);
         if (persist) persist(result.settings);
       } finally {
         driver.close();

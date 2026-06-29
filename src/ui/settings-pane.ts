@@ -2,9 +2,24 @@
 
 import { styles } from "./ansi.ts";
 import type { Settings } from "../types.ts";
+import chalk from "chalk";
 
 export const SETTING_MODELS = ["sonnet", "opus", "haiku"];
 export const SETTING_EFFORTS = ["low", "medium", "high"];
+
+// Background colour per model, applied at render time (never stored in the value).
+const MODEL_BG: Record<string, (text: string) => string> = {
+  sonnet: chalk.black.bgYellow,
+  opus: chalk.black.bgGreen,
+  haiku: chalk.black.bgCyan,
+};
+
+const EFFORT_BG: Record<string, (text: string) => string> = {
+  low: chalk.black.bgBlue,
+  medium: chalk.black.bgMagenta,
+  high: chalk.black.bgRed,
+};
+
 const SETTING_FIELDS = ["model", "effort", "verbose"] as const;
 
 export interface SettingsPaneState {
@@ -34,7 +49,9 @@ export function settingsReduce(
     return { done: true };
   }
   if (key === "up" || key === "k") {
-    return { state: { settings, cursor: (cursor - 1 + fieldCount) % fieldCount } };
+    return {
+      state: { settings, cursor: (cursor - 1 + fieldCount) % fieldCount },
+    };
   }
   if (key === "down" || key === "j") {
     return { state: { settings, cursor: (cursor + 1) % fieldCount } };
@@ -64,12 +81,25 @@ export function renderSettings(
     ["effort", settings.effort],
     ["verbose", settings.verbose ? "on" : "off"],
   ];
-  const lines = [bold("Settings"), ""];
+  const lines = ["Settings", ""];
   rows.forEach(([field, value], index) => {
     const focused = index === cursor;
     const marker = focused ? accent("❯ ") : "  ";
     const label = (field + ":").padEnd(9);
-    lines.push(marker + label + (focused ? invert(` ${value} `) : ` ${value} `));
+    // Colour the value by its background (render time only, gated on color).
+
+    type paletteType = Record<string, (text: string) => string> | null;
+    const palette: paletteType =
+      field === "model"
+        ? MODEL_BG
+        : field === "effort"
+          ? EFFORT_BG
+          : field === "verbose"
+            ? { on: chalk.green, off: chalk.white }
+            : null;
+    const shown =
+      color && palette && palette[value] ? palette[value](` ${value} `) : value;
+    lines.push(marker + (focused ? bold(label) : label) + shown);
   });
   lines.push("");
   lines.push(

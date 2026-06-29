@@ -63,7 +63,8 @@ export function renderFileSelect(
     const focused = index === cursor;
     const row = `${item.on ? "[x]" : "[ ]"} ${item.path}`;
     lines.push(
-      (focused ? accent("❯ ") : "  ") + (focused ? invert(` ${row} `) : ` ${row} `),
+      (focused ? bold("❯ ") : "  ") +
+        (focused ? invert(` ${row} `) : ` ${row} `),
     );
   });
   lines.push("");

@@ -7,7 +7,11 @@ import { executeOne } from "../git/commit.ts";
 import { runGit } from "../git/run.ts";
 import { withStatus } from "./spinner.ts";
 import { settingsReduce, renderSettings } from "./settings-pane.ts";
-import { fileSelectReduce, renderFileSelect, type FileSelectState } from "./file-select.ts";
+import {
+  fileSelectReduce,
+  renderFileSelect,
+  type FileSelectState,
+} from "./file-select.ts";
 import { DEFAULT_MODEL, DEFAULT_EFFORT } from "../ai/claude.ts";
 import type {
   Plan,
@@ -19,6 +23,7 @@ import type {
   ExpandPath,
   OutputStream,
 } from "../types.ts";
+import chalk from "chalk";
 
 const LEGEND_NAV = "↑/↓ move · enter accept · a accept all · s skip · q quit";
 const LEGEND_EDIT =
@@ -103,13 +108,19 @@ export function renderReview(
 
   const header: string[] = [];
   if (settings) {
-    header.push(
-      dim(
-        clip(
-          `settings: ${settings.model} · ${settings.effort} · ${settings.verbose ? "verbose" : "subject-only"}`,
-        ),
-      ),
+    // Colours are applied only when `color` is on, so piped/test output stays plain.
+    const paint = (text: string, paint: (t: string) => string) =>
+      color ? paint(text) : text;
+
+    const verboseLabel = settings.verbose ? "verbose" : "subject-only";
+    const model = paint(settings.model, chalk.yellow);
+    const effort = paint(settings.effort, chalk.red);
+    const verbose = paint(
+      verboseLabel,
+      settings.verbose ? chalk.green : chalk.magenta,
     );
+
+    header.push(clip(`${dim("settings:")} ${model} · ${effort} · ${verbose}`));
   }
   if (committed.length) {
     header.push(
@@ -120,6 +131,9 @@ export function renderReview(
       ),
     );
   }
+  // Blank line below the header (its "margin-bottom"). Counted in the height
+  // math below via header.length, so windowing stays correct.
+  if (header.length) header.push("");
   const footer = ["", dim(clip(LEGEND_NAV)), dim(clip(LEGEND_EDIT))];
 
   // Each block is: label row, subject row (highlighted when focused), any body
@@ -128,11 +142,13 @@ export function renderReview(
     const focused = index === cursor;
     const label = `Commit ${index + 1}`;
     const rows = [
-      (focused ? accent("❯ ") : "  ") + (focused ? bold(label) : dim(label)),
+      (focused ? bold("❯ ") : "  ") + (focused ? bold(label) : dim(label)),
     ];
     const messageLines = formatCommitMessage(commit).split("\n");
     const subjectLine = clip(messageLines[0], 7); // 5-space indent + 2 pad spaces
-    rows.push("     " + (focused ? invert(` ${subjectLine} `) : ` ${subjectLine} `));
+    rows.push(
+      "     " + (focused ? invert(` ${subjectLine} `) : ` ${subjectLine} `),
+    );
     for (const bodyLine of messageLines.slice(1)) {
       if (bodyLine.trim() === "") continue; // skip the subject/body separator
       rows.push("       " + dim(clip(bodyLine, 7)));
@@ -214,7 +230,8 @@ export async function interactiveReview(
   }: InteractiveReviewOptions,
 ): Promise<{ committed: Committed[]; settings: Settings }> {
   const out = output ?? process.stdout;
-  const edit = readLine ?? (async (_prompt: string, initial?: string) => initial ?? "");
+  const edit =
+    readLine ?? (async (_prompt: string, initial?: string) => initial ?? "");
   let commits = plan.commits.slice();
   let cursor = 0;
   let activeSettings: Settings = { ...settings };
@@ -229,7 +246,8 @@ export async function interactiveReview(
     out.write("\x1b[H\x1b[J" + text + "\n");
   };
   // Transient notice (model calls are slow); cleared by the next draw().
-  const notify = (message: string) => out.write("\x1b[H\x1b[J" + message + "\n");
+  const notify = (message: string) =>
+    out.write("\x1b[H\x1b[J" + message + "\n");
 
   const commitFocused = (index: number) => {
     committed.push(executeOne(commits[index], { runGit: git, expandPath }));
@@ -258,7 +276,10 @@ export async function interactiveReview(
         // Pre-fill with the full header (tag + subject) so the user can change
         // the tag too. The edited line is stored verbatim as a header override.
         const current = formatCommitMessage(commits[cursor]).split("\n")[0];
-        const edited = await edit("  edit message (enter save · esc cancel): ", current);
+        const edited = await edit(
+          "  edit message (enter save · esc cancel): ",
+          current,
+        );
         if (edited != null && edited.trim()) {
           commits[cursor] = { ...commits[cursor], header: edited.trim() };
         }
@@ -318,7 +339,9 @@ export async function interactiveReview(
     };
     let selectedFiles: string[] | null = null;
     for (;;) {
-      out.write("\x1b[H\x1b[J" + renderFileSelect(selectState, { color }) + "\n");
+      out.write(
+        "\x1b[H\x1b[J" + renderFileSelect(selectState, { color }) + "\n",
+      );
       const step = fileSelectReduce(selectState, await nextKey());
       if ("done" in step) {
         selectedFiles = "cancelled" in step ? null : step.selected;
@@ -350,7 +373,10 @@ export async function interactiveReview(
 
   // p: type a natural-language instruction, then re-plan the whole list with it.
   async function askClaudeToReplan(
-    runReplan: (settings: Settings, instruction?: string) => Promise<Plan | null>,
+    runReplan: (
+      settings: Settings,
+      instruction?: string,
+    ) => Promise<Plan | null>,
   ) {
     const instruction = await edit(
       "  tell Claude what to change (enter · esc cancel): ",

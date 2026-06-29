@@ -1,8 +1,13 @@
 // ANSI terminal styling helpers, shared by every screen the tool renders.
 
+import chalk from "chalk";
+
 type Style = (text: string) => string;
 
-const wrap = (code: string): Style => (text) => `\x1b[${code}m${text}\x1b[0m`;
+const wrap =
+  (code: string): Style =>
+  (text) =>
+    `\x1b[${code}m${text}\x1b[0m`;
 
 export interface Styles {
   invert: Style;
@@ -14,12 +19,14 @@ export interface Styles {
 // styles(useColor) -> named styling functions. When useColor is false they pass
 // the text through unchanged, which keeps rendered output assertable in tests.
 export function styles(useColor = true): Styles {
-  const style = (code: string): Style => (useColor ? wrap(code) : (text) => text);
+  const style = (code: string): Style =>
+    useColor ? wrap(code) : (text) => text;
   return {
     invert: style("7"),
     dim: style("2"),
     accent: style("36"),
-    bold: style("1"),
+    // bold: style("1"),
+    bold: chalk.blue,
   };
 }
 

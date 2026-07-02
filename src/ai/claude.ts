@@ -1,6 +1,5 @@
 // Invoking the `claude` CLI as a fast one-shot text generator.
 
-import { execFile } from "node:child_process";
 import type { GitResult } from "../types.ts";
 
 // Pinned model IDs, not tier aliases ("sonnet"): an alias resolves to whatever
@@ -17,8 +16,6 @@ export const DEFAULT_EFFORT = "low";
 const PLANNER_SYSTEM_PROMPT =
   "You are a git commit-message planner. Output only minified JSON matching the requested shape. No prose, no code fences.";
 
-const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
-
 // A runner returns the raw process result; injectable for tests.
 export type ClaudeRunner = (prompt: string) => GitResult | Promise<GitResult>;
 
@@ -32,35 +29,36 @@ interface CallClaudeOptions {
 // --strict-mcp-config (with no --mcp-config) loads ZERO MCP servers; a small
 // --system-prompt + fast --model + low --effort keep latency down. (--bare is
 // deliberately NOT used — it skips the settings that hold auth.)
-function runClaudeCli(prompt: string, model: string, effort: string): Promise<GitResult> {
-  return new Promise((resolve) => {
-    const args = [
-      "-p",
-      prompt,
-      "--output-format",
-      "json",
-      "--strict-mcp-config",
-      "--model",
-      model,
-      "--system-prompt",
-      PLANNER_SYSTEM_PROMPT,
-      "--effort",
-      effort,
-    ];
-    execFile(
-      "claude",
-      args,
-      { encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES },
-      (error: any, stdout, stderr) => {
-        const status = error
-          ? typeof error.code === "number"
-            ? error.code
-            : 1
-          : 0;
-        resolve({ status, stdout: stdout ?? "", stderr: stderr ?? "" });
-      },
-    );
-  });
+async function runClaudeCli(
+  prompt: string,
+  model: string,
+  effort: string,
+): Promise<GitResult> {
+  const args = [
+    "claude",
+    "-p",
+    prompt,
+    "--output-format",
+    "json",
+    "--strict-mcp-config",
+    "--model",
+    model,
+    "--system-prompt",
+    PLANNER_SYSTEM_PROMPT,
+    "--effort",
+    effort,
+  ];
+  try {
+    const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, status] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    return { status, stdout, stderr };
+  } catch (error) {
+    return { status: 1, stdout: "", stderr: (error as Error).message };
+  }
 }
 
 // callClaude(prompt, {runner, model, effort}) -> the model's text. The CLI's JSON

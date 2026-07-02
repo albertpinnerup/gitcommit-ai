@@ -8,9 +8,9 @@ const FAKE_COLLECT = () => ({ diff: 'd', files: [{ status: 'M', path: 'a.js' }],
 const FAKE_CLAUDE = () => JSON.stringify({ commits: [{ files: ['a.js'], type: 'feat', subject: 'add a' }] });
 
 test('parseArgs reads flags', () => {
-  assert.deepEqual(parseArgs([]), { dryRun: false, apply: false, help: false, verbose: false, model: null });
-  assert.deepEqual(parseArgs(['--dry-run']), { dryRun: true, apply: false, help: false, verbose: false, model: null });
-  assert.deepEqual(parseArgs(['--apply']), { dryRun: false, apply: true, help: false, verbose: false, model: null });
+  assert.deepEqual(parseArgs([]), { dryRun: false, apply: false, help: false, verbose: false, model: null, demo: false, demoScenario: 'default' });
+  assert.deepEqual(parseArgs(['--dry-run']), { dryRun: true, apply: false, help: false, verbose: false, model: null, demo: false, demoScenario: 'default' });
+  assert.deepEqual(parseArgs(['--apply']), { dryRun: false, apply: true, help: false, verbose: false, model: null, demo: false, demoScenario: 'default' });
   assert.equal(parseArgs(['-a']).apply, true);
   assert.equal(parseArgs(['-h']).help, true);
   assert.equal(parseArgs(['--help']).help, true);
@@ -19,6 +19,18 @@ test('parseArgs reads flags', () => {
   assert.equal(parseArgs(['--verbose']).verbose, true);
   assert.equal(parseArgs(['--body']).verbose, true); // back-compat alias
   assert.equal(parseArgs([]).model, null);
+});
+
+test('parseArgs reads --demo and its optional scenario', () => {
+  assert.equal(parseArgs([]).demo, false);
+  assert.deepEqual(
+    [parseArgs(['--demo']).demo, parseArgs(['--demo']).demoScenario],
+    [true, 'default'],
+  );
+  assert.equal(parseArgs(['--demo', 'many']).demoScenario, 'many');
+  assert.equal(parseArgs(['--demo', 'list']).demoScenario, 'list');
+  // a following flag is not consumed as the scenario name
+  assert.equal(parseArgs(['--demo', '--dry-run']).demoScenario, 'default');
 });
 
 test('main --help prints usage', async () => {

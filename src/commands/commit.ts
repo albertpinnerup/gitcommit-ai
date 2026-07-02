@@ -11,7 +11,7 @@ import { runGit } from "../git/run.ts";
 import { execute, expandPaths, executeOne } from "../git/commit.ts";
 import { callClaude, DEFAULT_MODEL, DEFAULT_EFFORT } from "../ai/claude.ts";
 import { withStatus } from "../ui/spinner.ts";
-import { renderPlan, reviewGate } from "../ui/review.ts";
+import { renderPlan, reviewGate } from "../review-gate.ts";
 import { runTui } from "../tui/run.tsx";
 import { loadSettings, saveSettings } from "../config.ts";
 import { demoDeps, listScenarios } from "../demo/index.ts";

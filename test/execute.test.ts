@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { execute } from '../src/git/commit.ts';
+import { execute, executeOne } from '../src/git/commit.ts';
 import { runGit } from '../src/git/run.ts';
 
 function makeRepo() {
@@ -38,6 +38,26 @@ test('execute creates one commit per plan entry with the right files', () => {
   assert.match(show, /change b/);
   assert.match(show, /b\.txt/);
   assert.doesNotMatch(show, /a\.txt/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('executeOne commits exactly one commit', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gca-one-'));
+  const g = (...a) => spawnSync('git', a, { cwd: dir, encoding: 'utf8' });
+  g('init', '-q'); g('config', 'user.email', 't@t.t'); g('config', 'user.name', 't');
+  writeFileSync(join(dir, 'a.txt'), 'a\n'); writeFileSync(join(dir, 'b.txt'), 'b\n');
+  g('add', '-A'); g('commit', '-q', '-m', 'init');
+  writeFileSync(join(dir, 'a.txt'), 'a2\n'); writeFileSync(join(dir, 'b.txt'), 'b2\n');
+  const runGit = (args) => {
+    const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+    return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  };
+  const out = executeOne({ files: ['a.txt'], type: 'feat', subject: 'change a' }, { runGit });
+  assert.equal(out.subject, 'feat: change a'); // reports the actual committed header
+  const show = g('show', '--name-only', '--format=%s', 'HEAD').stdout;
+  assert.match(show, /change a/);
+  assert.match(show, /a\.txt/);
+  assert.doesNotMatch(show, /b\.txt/); // b.txt left uncommitted
   rmSync(dir, { recursive: true, force: true });
 });
 

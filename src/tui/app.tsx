@@ -244,8 +244,11 @@ export function App({
         setCommits([{ files: selectedFiles, header: value.trim() }, ...rest]);
         setCursor(0);
       } else if (kind === "instruction") {
-        void runReplanWithInstruction(value);
-        return; // runReplanWithInstruction handles screen transitions
+        if (value.trim()) {
+          void runReplanWithInstruction(value);
+          return; // runReplanWithInstruction owns the screen transitions
+        }
+        // empty instruction: fall through to the review screen below
       }
       setScreen({ name: "review" });
     };

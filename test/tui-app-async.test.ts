@@ -109,3 +109,27 @@ test("error in replan shows error message and keeps the old plan", async () => {
   assert.match(frame, /add a/); // old plan intact
   ui.destroy();
 });
+
+test("empty instruction aborts back to review with the plan unchanged", async () => {
+  let replanCalls = 0;
+  const ui = await renderTui(app({ replan: async () => { replanCalls++; return null; } }), { height: 30 });
+  await ui.press("p");
+  await ui.press("return");   // submit the empty prefill
+  await new Promise((r) => setTimeout(r, 10));
+  const frame = ui.frame();
+  assert.match(frame, /add a/);            // old plan intact, review visible
+  assert.doesNotMatch(frame, /tell Claude what to change/); // not stuck in the editor
+  assert.equal(replanCalls, 0);            // replan never invoked
+  ui.destroy();
+});
+
+test("R with a null regeneration leaves the commit unchanged", async () => {
+  const ui = await renderTui(app({ regenerateCommit: async () => null }), { height: 30 });
+  await ui.press("R");
+  await new Promise((r) => setTimeout(r, 10));
+  await ui.press("j");
+  const frame = ui.frame();
+  assert.match(frame, /feat: add a/);
+  assert.match(frame, /files: a.ts/);
+  ui.destroy();
+});

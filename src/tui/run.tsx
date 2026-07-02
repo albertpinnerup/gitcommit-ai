@@ -52,6 +52,7 @@ export async function runTui({
   // root.render(); the whole setup runs in the same synchronous turn, allowing
   // the test's renderOnce() to capture the initial frame immediately.
   const renderer = makeRenderer ? makeRenderer() : await createCliRenderer();
+  const priorActEnv = (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT;
   if (makeRenderer) {
     // Enable React's synchronous flush so renderOnce() sees committed content,
     // mirroring what testRender() from @opentui/react/test-utils does.
@@ -61,6 +62,9 @@ export async function runTui({
   return new Promise<AppResult>((resolve, reject) => {
     const done = (result: AppResult | { error: Error }) => {
       root.unmount();
+      if (makeRenderer) {
+        (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = priorActEnv;
+      }
       if (!makeRenderer) (renderer as { destroy(): void }).destroy();
       if ("error" in result) reject(result.error);
       else resolve(result);

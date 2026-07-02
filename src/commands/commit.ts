@@ -305,7 +305,7 @@ export async function main(argv: string[], deps: Deps = {}): Promise<number> {
           settings,
           deps: {
             commitOne: (commit) =>
-              executeOne(commit, { runGit: git, expandPath: plannedRef?.expandPath }),
+              executeOne(commit, { runGit: git, expandPath: plannedRef!.expandPath }), // non-null: set before planPromise resolves, and commitOne only runs after
             replan: pipeline.replan,
             regenerateCommit: pipeline.regenerateCommit,
           },

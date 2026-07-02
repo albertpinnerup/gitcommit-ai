@@ -12,7 +12,8 @@ import { FileSelectScreen } from "./file-select-screen.tsx";
 import { LineEditor } from "./line-editor.tsx";
 import { Status } from "./status.tsx";
 import { settingsReduce, type SettingsPaneState } from "./settings.ts";
-import type { FileSelectState } from "./file-select.ts";
+import { fileSelectReduce, type FileSelectState } from "./file-select.ts";
+import { formatCommitMessage } from "../core/message.ts";
 import type {
   Plan, PlannedCommit, CommitMessage, Committed, Settings,
 } from "../types.ts";
@@ -92,8 +93,29 @@ export function App({
       finish(done);
     } else if (key === "c") {
       setScreen({ name: "settings", pane: { settings, cursor: 0 } });
+    } else if (key === "e") {
+      const current = formatCommitMessage(commits[cursor]).split("\n")[0];
+      setScreen({ name: "edit", kind: "message", initial: current });
+    } else if (key === "E") {
+      const current = (commits[cursor].body || "").replace(/\n/g, "\\n");
+      setScreen({ name: "edit", kind: "body", initial: current });
+    } else if (key === "n") {
+      const focusedFiles = new Set(commits[cursor]?.files ?? []);
+      const allFiles = commits.flatMap((commit) => commit.files);
+      setScreen({
+        name: "files",
+        state: { items: allFiles.map((path) => ({ path, on: focusedFiles.has(path) })), cursor: 0 },
+      });
     }
-    // e/E/n/p/r/R are added in Tasks 10–11.
+    // p/r/R are added in Task 11.
+  };
+
+  const handleFilesKey = (key: string, state: FileSelectState) => {
+    const step = fileSelectReduce(state, key);
+    if (!("done" in step)) { setScreen({ name: "files", state: step.state }); return; }
+    if ("cancelled" in step || step.selected.length === 0) { setScreen({ name: "review" }); return; }
+    const seed = commits[cursor] ? formatCommitMessage(commits[cursor]).split("\n")[0] : "";
+    setScreen({ name: "edit", kind: "newCommit", initial: seed, selectedFiles: step.selected });
   };
 
   const handleSettingsKey = (key: string, pane: SettingsPaneState) => {
@@ -115,18 +137,44 @@ export function App({
     if (screen.name === "edit") return;
     if (screen.name === "review") handleReviewKey(key);
     else if (screen.name === "settings") handleSettingsKey(key, screen.pane);
-    // files / regenAll / busy handlers arrive in Tasks 10–11.
+    else if (screen.name === "files") handleFilesKey(key, screen.state);
+    // regenAll / busy handlers arrive in Task 11.
   });
 
   if (screen.name === "settings") return <SettingsScreen state={screen.pane} />;
   if (screen.name === "files") return <FileSelectScreen state={screen.state} />;
   if (screen.name === "busy") return <Status label={screen.label} startedAt={screen.startedAt} />;
   if (screen.name === "edit") {
+    const prompts: Record<string, string> = {
+      message: "  edit message (enter save · esc cancel): ",
+      body: "  edit body — \\n for line break (enter save · esc cancel): ",
+      newCommit: "  message for the new commit (enter save · esc cancel): ",
+      instruction: "  tell Claude what to change (enter · esc cancel): ",
+    };
+    const save = (value: string) => {
+      const { kind, selectedFiles } = screen;
+      if (kind === "message" && value.trim()) {
+        setCommits(commits.map((c, i) => (i === cursor ? { ...c, header: value.trim() } : c)));
+      } else if (kind === "body") {
+        const body = value.replace(/\\n/g, "\n").trim();
+        setCommits(commits.map((c, i) => (i === cursor ? { ...c, body: body || undefined } : c)));
+      } else if (kind === "newCommit" && value.trim() && selectedFiles) {
+        const chosen = new Set(selectedFiles);
+        const rest = commits
+          .map((c) => ({ ...c, files: c.files.filter((f) => !chosen.has(f)) }))
+          .filter((c) => c.files.length > 0);
+        setCommits([{ files: selectedFiles, header: value.trim() }, ...rest]);
+        setCursor(0);
+      } else if (kind === "instruction") {
+        // Task 11 wires this
+      }
+      setScreen({ name: "review" });
+    };
     return (
       <LineEditor
-        prompt=""
+        prompt={prompts[screen.kind]}
         initial={screen.initial}
-        onSave={() => setScreen({ name: "review" })}
+        onSave={save}
         onCancel={() => setScreen({ name: "review" })}
       />
     );

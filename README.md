@@ -26,8 +26,20 @@ commit --dry-run        # show the plan and the git commands; change nothing
 commit --apply          # skip the review gate and commit the proposed plan (-a)
 commit --verbose        # add a short body to each commit (-v; default: subject-only)
 commit --model opus     # plan with a specific model (default: sonnet)
+commit --demo           # drive the UI with canned fixtures — no tokens, no git
+commit --demo list      # list the available demo scenarios
 commit --help
 ```
+
+### Demo mode
+
+`--demo` runs the real interactive UI against built-in fixtures — no `claude`
+call (zero tokens), no real git (nothing is committed), and near-instant. It's
+for developing and eyeballing the UI without burning tokens on throwaway
+commits. Pick a scenario with `commit --demo <name>` (`default`, `single`,
+`many`, `renames`, `long`); `commit --demo list` shows them. A small artificial
+delay keeps the planning spinner visible — set `COMMIT_DEMO_DELAY=0` (ms) to
+remove it. `npm run demo` is a shortcut for `commit --demo`.
 
 Model, effort, and verbose can also be changed **inside** the picker (press `c`),
 then regenerated without restarting — see [Review gate](#review-gate).

@@ -58,3 +58,13 @@ test("Status renders the label with full format", async () => {
   assert.match(ui.frame(), /commit · \d+s · planning commits/);
   ui.destroy();
 });
+
+// ---- gradient-font color math -------------------------------------------------
+
+test("lerpHex hits both endpoints and the midpoint", async () => {
+  const { lerpHex, darkenHex } = await import("../src/tui/gradient-font.ts");
+  assert.equal(lerpHex("#000000", "#ffffff", 0), "#000000");
+  assert.equal(lerpHex("#000000", "#ffffff", 1), "#ffffff");
+  assert.equal(lerpHex("#000000", "#ffffff", 0.5), "#808080");
+  assert.equal(darkenHex("#ffffff", 0.5), "#808080");
+});

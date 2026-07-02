@@ -1,20 +1,32 @@
 // Every color the TUI uses, in one place. Successor to styles() in ansi.ts.
 
+const red = "#fe5b56";
+const green = "#5bf68e";
+const blue = "#56c1f8";
+const yellow = "#f3f99d";
+const cyan = "#00ffff";
+const magenta = "#ff6ac1";
+const white = "#ffffff";
+const black = "#000000";
+const gray = "#888888";
+
 export const theme = {
-  accent: "#00FFFF",
-  dim: "#777777",
-  focusBg: "#FFFFFF",
-  focusFg: "#000000",
+  accent: blue,
+  dim: gray,
+  focusBg: white,
+  focusFg: black,
   model: {
-    "claude-sonnet-4-6": { fg: "#000000", bg: "#FFFF00" },
-    "claude-opus-4-8": { fg: "#000000", bg: "#00FF00" },
-    "claude-haiku-4-5": { fg: "#000000", bg: "#00FFFF" },
+    "claude-sonnet-4-6": { fg: black, bg: yellow },
+    "claude-opus-4-8": { fg: black, bg: green },
+    "claude-haiku-4-5": { fg: black, bg: cyan },
   } as Record<string, { fg: string; bg: string }>,
   effortColor: {
-    low: "#5555FF",
-    medium: "#FF55FF",
-    high: "#FF5555",
+    low: blue,
+    medium: yellow,
+    high: red,
   } as Record<string, string>,
-  onColor: "#00FF00",
-  offColor: "#FF0000",
+  onColor: green,
+  offColor: red,
+  // Left-to-right gradient stops for the title banner.
+  bannerGradient: [blue, magenta] as [string, string],
 };

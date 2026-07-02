@@ -113,6 +113,47 @@ test("scroll-follow: focused commit stays visible after navigating deep into the
   ui.destroy();
 });
 
+test("a shows error and keeps state when commitOne throws on second commit", async () => {
+  let callCount = 0;
+  let result: AppResult | null = null;
+
+  const deps = {
+    commitOne: (c: PlannedCommit) => {
+      callCount++;
+      if (callCount >= 2) throw new Error("gpg sign failed");
+      return { subject: c.subject ?? c.header ?? "", files: c.files };
+    },
+    replan: async () => null,
+    regenerateCommit: async () => null,
+  };
+  const plan = {
+    commits: [
+      { files: ["a.ts"], type: "feat", subject: "add a" },
+      { files: ["b.ts"], type: "fix", subject: "fix b" },
+    ],
+  };
+  const node = React.createElement(App, {
+    plan,
+    settings: SETTINGS,
+    deps,
+    height: 30,
+    width: 80,
+    onDone: (r: AppResult) => { result = r; },
+  });
+  const ui = await renderTui(node, { width: 80, height: 30 });
+
+  await ui.press("a");
+
+  const frame = ui.frame();
+  assert.match(frame, /gpg sign failed/); // error is shown
+  assert.match(frame, /committed 1: add a/); // first commit was committed
+
+  await ui.press("j"); // app is still interactive — must not crash
+
+  assert.equal(result, null); // onDone was NOT called
+  ui.destroy();
+});
+
 test("onDone fires exactly once even when keys arrive after finishing", async () => {
   let calls = 0;
   const { node } = makeApp(() => { calls++; });

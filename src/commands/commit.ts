@@ -12,7 +12,7 @@ import { execute, expandPaths, executeOne } from "../git/commit.ts";
 import { callClaude, DEFAULT_MODEL, DEFAULT_EFFORT } from "../ai/claude.ts";
 import { withStatus } from "../ui/spinner.ts";
 import { renderPlan, reviewGate } from "../review-gate.ts";
-import { runTui } from "../tui/run.tsx";
+import { runTui, type RunTuiOptions } from "../tui/run.tsx";
 import { loadSettings, saveSettings } from "../config.ts";
 import { demoDeps, listScenarios } from "../demo/index.ts";
 import type {
@@ -49,6 +49,7 @@ export interface Deps {
     settings: Settings,
   ) => Promise<CommitMessage | null>;
   input?: () => Promise<string>;
+  makeRenderer?: RunTuiOptions["makeRenderer"];
 }
 
 // resolveSettings(args, env, saved) -> the effective settings. Pure. Precedence:
@@ -287,8 +288,9 @@ export async function main(argv: string[], deps: Deps = {}): Promise<number> {
     // === Interactive TTY path — mount the React app ===
     // Decision happens before planning so <PlanningScreen> runs while the model
     // works. Non-interactive paths keep the old spinner + renderPlan flow.
+    // deps.makeRenderer acts as an explicit interactive request (test injection); never set in production.
     const interactive =
-      !args.apply && !args.dryRun && process.stdin.isTTY && deps.input === undefined;
+      !args.apply && !args.dryRun && (process.stdin.isTTY || deps.makeRenderer !== undefined) && deps.input === undefined;
 
     if (interactive) {
       let plannedRef: Planned | null = null;
@@ -298,6 +300,7 @@ export async function main(argv: string[], deps: Deps = {}): Promise<number> {
         plannedRef = planned;
         return planned.plan;
       })();
+      void planPromise.catch(() => {}); // pre-attach: Root handles the real rejection after the renderer mounts
 
       try {
         const result = await runTui({
@@ -309,6 +312,7 @@ export async function main(argv: string[], deps: Deps = {}): Promise<number> {
             replan: pipeline.replan,
             regenerateCommit: pipeline.regenerateCommit,
           },
+          makeRenderer: deps.makeRenderer,
         });
         const persist = deps.saveSettings ?? saveSettings;
         persist(result.settings);

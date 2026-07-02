@@ -66,13 +66,18 @@ export function App({
   };
 
   const commitAt = (index: number): void => {
-    const record = deps.commitOne(commits[index]);
-    const nextCommits = commits.filter((_, i) => i !== index);
-    const nextCommitted = [...committed, record];
-    setCommits(nextCommits);
-    setCommitted(nextCommitted);
-    clampCursor(nextCommits);
-    if (nextCommits.length === 0) finish(nextCommitted);
+    setError(null);
+    try {
+      const record = deps.commitOne(commits[index]);
+      const nextCommits = commits.filter((_, i) => i !== index);
+      const nextCommitted = [...committed, record];
+      setCommits(nextCommits);
+      setCommitted(nextCommitted);
+      clampCursor(nextCommits);
+      if (nextCommits.length === 0) finish(nextCommitted);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
   };
 
   const busy = (label: string) => setScreen({ name: "busy", label, startedAt: Date.now() });
@@ -153,9 +158,23 @@ export function App({
       if (next.length === 0) finish(committed);
     } else if (key === "enter") commitAt(cursor);
     else if (key === "a") {
-      // Commit all synchronously in list order.
+      // Commit all synchronously in list order. On failure, keep successful
+      // commits, surface the error, and leave the app interactive (no finish()).
+      setError(null);
       let done = [...committed];
-      for (const commit of commits) done = [...done, deps.commitOne(commit)];
+      const remaining = [...commits];
+      for (let i = 0; i < remaining.length; i++) {
+        try {
+          done = [...done, deps.commitOne(remaining[i])];
+        } catch (error) {
+          setError(error instanceof Error ? error.message : String(error));
+          const notYetCommitted = remaining.slice(i);
+          setCommits(notYetCommitted);
+          setCommitted(done);
+          clampCursor(notYetCommitted);
+          return;
+        }
+      }
       setCommits([]);
       setCommitted(done);
       finish(done);

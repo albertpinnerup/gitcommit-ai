@@ -234,11 +234,11 @@ test('interactiveReview: q with nothing committed returns empty', async () => {
 // ---- settings pane ----------------------------------------------------------
 
 test('settingsReduce navigates fields and cycles values', () => {
-  let s = { settings: { model: 'sonnet', effort: 'low', verbose: false }, cursor: 0 };
+  let s = { settings: { model: 'claude-sonnet-4-6', effort: 'low', verbose: false }, cursor: 0 };
   s = settingsReduce(s, 'right').state;                 // model: sonnet -> opus
-  assert.equal(s.settings.model, 'opus');
+  assert.equal(s.settings.model, 'claude-opus-4-8');
   s = settingsReduce(s, 'left').state;                  // back to sonnet
-  assert.equal(s.settings.model, 'sonnet');
+  assert.equal(s.settings.model, 'claude-sonnet-4-6');
   s = settingsReduce(s, 'down').state;                  // focus effort
   s = settingsReduce(s, 'right').state;                 // low -> medium
   assert.equal(s.settings.effort, 'medium');
@@ -261,9 +261,11 @@ test('renderSettings shows fields, focus marker, and a hint', () => {
 test('renderReview shows current settings when provided', () => {
   const text = renderReview(
     { commits: PLAN.commits, cursor: 0, committed: [] },
-    { color: false, settings: { model: 'opus', effort: 'low', verbose: true } },
+    { color: false, settings: { model: 'claude-opus-4-8', effort: 'low', verbose: true } },
   );
-  assert.match(text, /settings: opus · low · verbose/);
+  assert.match(text, /Model: claude-opus-4-8/);
+  assert.match(text, /Effort: low/);
+  assert.match(text, /Verbose: verbose/);
 });
 
 // ---- file multi-select + add-your-own / instruct-claude ---------------------
@@ -362,7 +364,7 @@ test('interactiveReview: c opens settings, change flows into regeneration', asyn
   await interactiveReview(PLAN, {
     nextKey: keys(['c', 'down', 'down', 'right', 'escape', 'R', 'q']),
     output: sink(), runGit, regenerateCommit,
-    settings: { model: 'sonnet', effort: 'low', verbose: false },
+    settings: { model: 'claude-sonnet-4-6', effort: 'low', verbose: false },
   });
   assert.equal(seenVerbose, true);  // the toggled setting reached the regen callback
 });

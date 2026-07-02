@@ -11,7 +11,7 @@ test('resolveSettings: CLI/env > saved > default', () => {
   // defaults when nothing is set
   assert.deepEqual(
     resolveSettings(parseArgs([]), {}, {}),
-    { model: 'sonnet', effort: 'low', verbose: false },
+    { model: 'claude-sonnet-4-6', effort: 'low', verbose: false },
   );
   // saved values fill in over defaults
   assert.deepEqual(

@@ -14,6 +14,7 @@ import { withStatus } from "../ui/spinner.ts";
 import { renderPlan, reviewGate, interactiveReview } from "../ui/review.ts";
 import { makeRawKeyDriver, type KeyDriver } from "../ui/raw-input.ts";
 import { loadSettings, saveSettings } from "../config.ts";
+import { demoDeps, listScenarios } from "../demo/index.ts";
 import type {
   Plan,
   PlannedCommit,
@@ -220,6 +221,21 @@ export async function main(argv: string[], deps: Deps = {}): Promise<number> {
   if (args.help) {
     out.write(HELP + "\n");
     return 0;
+  }
+
+  // Demo mode: run the real pipeline against canned fixtures. The demo fakes go
+  // UNDER any explicitly-injected dep, so tests still override them.
+  if (args.demo) {
+    if (args.demoScenario === "list") {
+      out.write(listScenarios());
+      return 0;
+    }
+    try {
+      deps = { ...demoDeps(args.demoScenario), ...deps };
+    } catch (error) {
+      err.write(`error: ${(error as Error).message}\n`);
+      return 1;
+    }
   }
 
   const settings = resolveSettings(

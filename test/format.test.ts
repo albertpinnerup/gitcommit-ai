@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { getChangedFiles } from '../src/git/status.ts';
 import { formatCommitMessage } from '../src/core/message.ts';

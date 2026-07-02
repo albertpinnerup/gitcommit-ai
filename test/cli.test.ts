@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { parseArgs } from '../src/cli.ts';
 import { main } from '../src/commands/commit.ts';

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 // Executable entry point. The implementation lives in ./src; this file only
 // wires the CLI up and runs it.

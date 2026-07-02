@@ -11,6 +11,7 @@ import { SettingsScreen } from "./settings-screen.tsx";
 import { FileSelectScreen } from "./file-select-screen.tsx";
 import { LineEditor } from "./line-editor.tsx";
 import { Status } from "./status.tsx";
+import { theme } from "./theme.ts";
 import { settingsReduce, type SettingsPaneState } from "./settings.ts";
 import { fileSelectReduce, type FileSelectState } from "./file-select.ts";
 import { formatCommitMessage } from "../core/message.ts";
@@ -52,6 +53,7 @@ export function App({
   const [committed, setCommitted] = useState<Committed[]>([]);
   const [settings, setSettings] = useState<Settings>(initialSettings);
   const [screen, setScreen] = useState<Screen>({ name: "review" });
+  const [error, setError] = useState<string | null>(null);
   const finished = useRef(false);
 
   const clampCursor = (next: PlannedCommit[]) =>
@@ -71,6 +73,72 @@ export function App({
     setCommitted(nextCommitted);
     clampCursor(nextCommits);
     if (nextCommits.length === 0) finish(nextCommitted);
+  };
+
+  const busy = (label: string) => setScreen({ name: "busy", label, startedAt: Date.now() });
+
+  // Replace a commit's message but keep its files (regeneration drops any
+  // header override) — mirrors applyMessage in the old loop.
+  const applyMessage = (index: number, message: CommitMessage | null) => {
+    if (!message) return;
+    setCommits((current) =>
+      current.map((c, i) => (i === index ? { ...message, files: c.files } : c)),
+    );
+  };
+
+  const runRegenerateOne = async () => {
+    setError(null);
+    try {
+      busy("regenerating this commit");
+      const message = await deps.regenerateCommit(commits[cursor], settings);
+      applyMessage(cursor, message);
+      setScreen({ name: "review" });
+    } catch (err) {
+      setError((err as Error).message);
+      setScreen({ name: "review" });
+    }
+  };
+
+  const runReplanWithInstruction = async (instruction: string) => {
+    if (!instruction.trim()) return;
+    setError(null);
+    try {
+      busy("re-planning with your guidance");
+      const next = await deps.replan(settings, instruction.trim());
+      if (next && next.commits.length) { setCommits(next.commits); setCursor(0); }
+      setScreen({ name: "review" });
+    } catch (err) {
+      setError((err as Error).message);
+      setScreen({ name: "review" });
+    }
+  };
+
+  const runRegroup = async () => {
+    setError(null);
+    try {
+      busy("regenerating (regrouping)");
+      const next = await deps.replan(settings);
+      if (next && next.commits.length) { setCommits(next.commits); setCursor(0); }
+      setScreen({ name: "review" });
+    } catch (err) {
+      setError((err as Error).message);
+      setScreen({ name: "review" });
+    }
+  };
+
+  const runRewriteAll = async () => {
+    setError(null);
+    const snapshot = commits;
+    try {
+      for (let index = 0; index < snapshot.length; index++) {
+        busy(`regenerating message ${index + 1}/${snapshot.length}`);
+        applyMessage(index, await deps.regenerateCommit(snapshot[index], settings));
+      }
+      setScreen({ name: "review" });
+    } catch (err) {
+      setError((err as Error).message);
+      setScreen({ name: "review" });
+    }
   };
 
   const handleReviewKey = (key: string) => {
@@ -107,7 +175,9 @@ export function App({
         state: { items: allFiles.map((path) => ({ path, on: focusedFiles.has(path) })), cursor: 0 },
       });
     }
-    // p/r/R are added in Task 11.
+    else if (key === "p") setScreen({ name: "edit", kind: "instruction", initial: "" });
+    else if (key === "R") void runRegenerateOne();
+    else if (key === "r") setScreen({ name: "regenAll" });
   };
 
   const handleFilesKey = (key: string, state: FileSelectState) => {
@@ -138,12 +208,20 @@ export function App({
     if (screen.name === "review") handleReviewKey(key);
     else if (screen.name === "settings") handleSettingsKey(key, screen.pane);
     else if (screen.name === "files") handleFilesKey(key, screen.state);
-    // regenAll / busy handlers arrive in Task 11.
+    else if (screen.name === "regenAll") {
+      if (key === "g") void runRegroup();
+      else if (key === "m") void runRewriteAll();
+      else if (key === "escape") setScreen({ name: "review" });
+    }
+    else if (screen.name === "busy") { /* ignore keys while busy */ }
   });
 
   if (screen.name === "settings") return <SettingsScreen state={screen.pane} />;
   if (screen.name === "files") return <FileSelectScreen state={screen.state} />;
   if (screen.name === "busy") return <Status label={screen.label} startedAt={screen.startedAt} />;
+  if (screen.name === "regenAll") {
+    return <text>  regenerate all — [g] regroup · [m] messages only · esc cancel</text>;
+  }
   if (screen.name === "edit") {
     const prompts: Record<string, string> = {
       message: "  edit message (enter save · esc cancel): ",
@@ -166,7 +244,8 @@ export function App({
         setCommits([{ files: selectedFiles, header: value.trim() }, ...rest]);
         setCursor(0);
       } else if (kind === "instruction") {
-        // Task 11 wires this
+        void runReplanWithInstruction(value);
+        return; // runReplanWithInstruction handles screen transitions
       }
       setScreen({ name: "review" });
     };
@@ -180,13 +259,16 @@ export function App({
     );
   }
   return (
-    <ReviewScreen
-      commits={commits}
-      cursor={cursor}
-      committed={committed}
-      settings={settings}
-      height={height}
-      width={width}
-    />
+    <box flexDirection="column">
+      {error && <text fg={theme.offColor}>{error}</text>}
+      <ReviewScreen
+        commits={commits}
+        cursor={cursor}
+        committed={committed}
+        settings={settings}
+        height={error ? height - 1 : height}
+        width={width}
+      />
+    </box>
   );
 }

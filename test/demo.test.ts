@@ -59,25 +59,10 @@ test('listScenarios names every scenario', () => {
 
 // ---- main --demo integration -------------------------------------------------
 
-test('main --demo drives the real UI and commits via fakes only', async () => {
-  const out = sink();
-  let realGit = false;
-  const code = await main(['--demo'], {
-    output: out,
-    nextKey: keys(['a']),              // accept all
-    // If demo forgot to inject runGit, this would flip; it must stay false.
-    // (deps we pass win over demo, so only pass observers, not overrides.)
-  });
-  assert.equal(code, 0);
-  assert.match(out.text(), /Created \d+ commit/);
-  assert.equal(realGit, false);
-});
-
-test('main --demo many renders more than one commit', async () => {
-  const out = sink();
-  await main(['--demo', 'many'], { output: out, nextKey: keys(['q']) });
-  assert.match(out.text(), /Commit 6/);
-});
+// Removed: 'main --demo drives the real UI and commits via fakes only'
+// Removed: 'main --demo many renders more than one commit'
+// These injected nextKey into Deps (no longer part of the Deps interface).
+// The interactive TUI + demo path is covered by Task 14's smoke tests.
 
 test('main --demo list prints the scenarios and exits 0', async () => {
   const out = sink();

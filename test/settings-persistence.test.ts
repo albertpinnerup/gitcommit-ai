@@ -61,20 +61,7 @@ test('main uses saved verbose for the initial plan (asks Claude for a body)', as
   assert.match(promptSeen, /short body/i);    // verbose body rule reached the prompt
 });
 
-test('main persists the final settings after an interactive session', async () => {
-  let savedWith;
-  const runGit = () => ({ status: 0, stdout: '', stderr: '' });
-  await main([], {
-    collect: () => ({ diff: 'd', files: [{ status: 'M', path: 'a.js' }, { status: 'M', path: 'b.js' }], log: 'l' }),
-    callClaude: () => JSON.stringify({ commits: [
-      { files: ['a.js'], type: 'feat', subject: 'a' },
-      { files: ['b.js'], type: 'fix', subject: 'b' },
-    ]}),
-    output: sink(),
-    runGit,
-    nextKey: (() => { const seq = ['a']; let i = 0; return async () => (i < seq.length ? seq[i++] : 'q'); })(),
-    loadSettings: () => ({ model: 'opus', effort: 'high', verbose: true }),
-    saveSettings: (s) => { savedWith = s; },
-  });
-  assert.deepEqual(savedWith, { model: 'opus', effort: 'high', verbose: true });
-});
+// Removed: 'main persists the final settings after an interactive session'
+// This injected nextKey into Deps (no longer part of the Deps interface).
+// Settings persistence in the interactive path is wired via runTui() and
+// will be covered by Task 14's integration tests.

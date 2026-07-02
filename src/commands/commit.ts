@@ -8,11 +8,11 @@ import { parsePlan, parseMessage } from "../core/plan.ts";
 import { buildPrompt, buildRewritePrompt } from "../ai/prompts.ts";
 import { collect } from "../git/status.ts";
 import { runGit } from "../git/run.ts";
-import { execute, expandPaths } from "../git/commit.ts";
+import { execute, expandPaths, executeOne } from "../git/commit.ts";
 import { callClaude, DEFAULT_MODEL, DEFAULT_EFFORT } from "../ai/claude.ts";
 import { withStatus } from "../ui/spinner.ts";
-import { renderPlan, reviewGate, interactiveReview } from "../ui/review.ts";
-import { makeRawKeyDriver, type KeyDriver } from "../ui/raw-input.ts";
+import { renderPlan, reviewGate } from "../ui/review.ts";
+import { runTui } from "../tui/run.tsx";
 import { loadSettings, saveSettings } from "../config.ts";
 import { demoDeps, listScenarios } from "../demo/index.ts";
 import type {
@@ -28,6 +28,12 @@ import type {
   OutputStream,
 } from "../types.ts";
 
+// Thrown inside the interactive planPromise when the working tree is clean.
+// Caught around runTui() to print the "nothing to commit" message and exit 0.
+class NothingToCommit extends Error {
+  constructor() { super("nothing to commit"); }
+}
+
 export interface Deps {
   output?: OutputStream;
   error?: OutputStream;
@@ -42,8 +48,6 @@ export interface Deps {
     commit: PlannedCommit,
     settings: Settings,
   ) => Promise<CommitMessage | null>;
-  nextKey?: () => Promise<string>;
-  readLine?: (prompt: string, initial?: string) => Promise<string | null>;
   input?: () => Promise<string>;
 }
 
@@ -114,9 +118,27 @@ interface Planned {
   expandPath?: ExpandPath;
 }
 
+// planCommitsData(pipeline) -> the proposed plan (or null when there's nothing
+// to commit). Pure data fetch: no spinner, no timing readout. Used by the
+// interactive path, which shows <PlanningScreen> while this runs.
+async function planCommitsData(pipeline: Pipeline): Promise<Planned | null> {
+  const { settings } = pipeline;
+  const { diff, files, log } = pipeline.collectChanges();
+  if (files.length === 0) return null;
+
+  const prompt = buildPrompt({ diff, files, log, allowBody: settings.verbose });
+  const raw = await pipeline.generate(prompt);
+  const plan = parsePlan(
+    raw,
+    files.map((file) => file.path),
+    renameAliases(files),
+  );
+  return { plan, files, expandPath: renameExpander(files) };
+}
+
 // planCommits(pipeline) -> the proposed plan (or null when there's nothing to
-// commit). Effectful: reads git and calls the model, but the shaping it does
-// (buildPrompt -> parsePlan) is pure.
+// commit). Effectful: reads git and calls the model, wrapped in a spinner and
+// timing readout. Used by non-interactive paths (--apply, --dry-run, piped).
 async function planCommits(pipeline: Pipeline): Promise<Planned | null> {
   const { settings, statusStream } = pipeline;
   const { diff, files, log } = pipeline.collectChanges();
@@ -147,51 +169,17 @@ async function planCommits(pipeline: Pipeline): Promise<Planned | null> {
 
 // commitPlan(planned, pipeline) -> the commits made, [] if the user committed
 // nothing, or null if a non-TTY review was aborted (message already written).
-// The only step that mutates git.
+// Handles --apply and the line-based non-TTY gate only; the interactive TUI
+// path is handled directly in main() via runTui().
 async function commitPlan(
   planned: Planned,
   pipeline: Pipeline,
 ): Promise<Committed[] | null> {
   const { plan, expandPath } = planned;
-  const { args, deps, out, git, settings } = pipeline;
+  const { args, deps, out, git } = pipeline;
 
   if (args.apply) {
     return execute(plan, { runGit: git, expandPath }).committed;
-  }
-
-  if (deps.nextKey || (process.stdin.isTTY && deps.input === undefined)) {
-    // Interactive arrow-key gate (real TTY, or injected keys for tests).
-    const driver: KeyDriver = deps.nextKey
-      ? {
-          nextKey: deps.nextKey,
-          readLine: deps.readLine ?? (async () => ""),
-          close: () => {},
-        }
-      : makeRawKeyDriver(process.stdin, process.stdout);
-    const dimensions = deps.nextKey
-      ? {}
-      : { width: process.stdout.columns || 80, height: process.stdout.rows || 24 };
-    try {
-      const result = await interactiveReview(plan, {
-        nextKey: driver.nextKey,
-        readLine: driver.readLine,
-        output: out,
-        runGit: git,
-        color: !process.env.NO_COLOR,
-        settings,
-        replan: pipeline.replan,
-        regenerateCommit: pipeline.regenerateCommit,
-        expandPath,
-        ...dimensions,
-      });
-      // Remember the settings for next time. Persist on real runs, or when a test
-      // injects saveSettings; skip otherwise so tests don't write files.
-      const persist = deps.saveSettings ?? (deps.nextKey ? null : saveSettings);
-      if (persist) persist(result.settings);
-      return result.committed;
-    } finally {
-      driver.close();
-    }
   }
 
   // Line-based fallback for piped / non-TTY input.
@@ -296,6 +284,54 @@ export async function main(argv: string[], deps: Deps = {}): Promise<number> {
   };
 
   try {
+    // === Interactive TTY path — mount the React app ===
+    // Decision happens before planning so <PlanningScreen> runs while the model
+    // works. Non-interactive paths keep the old spinner + renderPlan flow.
+    const interactive =
+      !args.apply && !args.dryRun && process.stdin.isTTY && deps.input === undefined;
+
+    if (interactive) {
+      let plannedRef: Planned | null = null;
+      const planPromise = (async () => {
+        const planned = await planCommitsData(pipeline);
+        if (!planned) throw new NothingToCommit();
+        plannedRef = planned;
+        return planned.plan;
+      })();
+
+      try {
+        const result = await runTui({
+          planPromise,
+          settings,
+          deps: {
+            commitOne: (commit) =>
+              executeOne(commit, { runGit: git, expandPath: plannedRef?.expandPath }),
+            replan: pipeline.replan,
+            regenerateCommit: pipeline.regenerateCommit,
+          },
+        });
+        const persist = deps.saveSettings ?? saveSettings;
+        persist(result.settings);
+        if (!result.committed.length) {
+          out.write("\nnothing committed\n");
+          return 1;
+        }
+        out.write(
+          `\nCreated ${result.committed.length} commit(s):\n` +
+            result.committed.map((commit) => `  • ${commit.subject}`).join("\n") +
+            "\n",
+        );
+        return 0;
+      } catch (error) {
+        if (error instanceof NothingToCommit) {
+          out.write("nothing to commit (tracked changes only)\n");
+          return 0;
+        }
+        throw error;
+      }
+    }
+
+    // === Non-interactive paths (--apply, --dry-run, piped / non-TTY) ===
     const planned = await planCommits(pipeline);
     if (!planned) {
       out.write("nothing to commit (tracked changes only)\n");

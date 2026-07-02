@@ -3,7 +3,7 @@
 // useKeyboard routes normalized key tokens to the active screen's handler.
 // Screens themselves are pure views.
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useKeyboard } from "@opentui/react";
 import { toKey } from "./keys.ts";
 import { ReviewScreen } from "./review-screen.tsx";
@@ -51,13 +51,18 @@ export function App({
   const [committed, setCommitted] = useState<Committed[]>([]);
   const [settings, setSettings] = useState<Settings>(initialSettings);
   const [screen, setScreen] = useState<Screen>({ name: "review" });
+  const finished = useRef(false);
 
   const clampCursor = (next: PlannedCommit[]) =>
     setCursor((c) => Math.max(0, Math.min(c, next.length - 1)));
 
-  const finish = (done: Committed[]) => onDone({ committed: done, settings });
+  const finish = (done: Committed[]) => {
+    if (finished.current) return;
+    finished.current = true;
+    onDone({ committed: done, settings });
+  };
 
-  const commitAt = (index: number): Committed[] => {
+  const commitAt = (index: number): void => {
     const record = deps.commitOne(commits[index]);
     const nextCommits = commits.filter((_, i) => i !== index);
     const nextCommitted = [...committed, record];
@@ -65,7 +70,6 @@ export function App({
     setCommitted(nextCommitted);
     clampCursor(nextCommits);
     if (nextCommits.length === 0) finish(nextCommitted);
-    return nextCommitted;
   };
 
   const handleReviewKey = (key: string) => {
@@ -105,6 +109,7 @@ export function App({
 
   useKeyboard((event) => {
     const key = toKey(event);
+    if (finished.current) return;
     // When LineEditor is active it owns its keys (escape via onKeyDown); don't
     // let the App-level router intercept them.
     if (screen.name === "edit") return;

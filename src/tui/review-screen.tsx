@@ -57,7 +57,7 @@ export function ReviewScreen({
       0,
     );
     scrollRef.current.scrollTop = offset;
-  }, [cursor]);
+  }, [cursor, commits]);
 
   return (
     <box flexDirection="column" height={height}>

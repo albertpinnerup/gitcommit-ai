@@ -112,3 +112,15 @@ test("scroll-follow: focused commit stays visible after navigating deep into the
   assert.match(frame, /feat: sub-20/);
   ui.destroy();
 });
+
+test("onDone fires exactly once even when keys arrive after finishing", async () => {
+  let calls = 0;
+  const { node } = makeApp(() => { calls++; });
+  const ui = await renderTui(node, { height: 30 });
+  await ui.press("a");   // commits everything, finishes
+  await ui.press("q");   // post-finish key must be inert
+  await ui.press("j");   // must not NaN-corrupt or crash
+  await ui.press("return"); // must not call commitOne(undefined)
+  assert.equal(calls, 1);
+  ui.destroy();
+});

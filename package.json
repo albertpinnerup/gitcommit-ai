@@ -9,7 +9,8 @@
     "test": "node --test \"test/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "dev": "node --watch ./index.ts",
-    "demo": "node ./index.ts --demo"
+    "demo": "node ./index.ts --demo",
+    "dev:demo": "COMMIT_DEMO_DELAY=0 node --watch ./index.ts --demo"
   },
   "devDependencies": {
     "@types/node": "^26.0.1",
@@ -17,6 +18,8 @@
   },
   "dependencies": {
     "chalk": "^5.6.2",
+    "figlet": "^1.11.0",
+    "gradient-string": "^3.0.0",
     "nanospinner": "^1.2.2"
   }
 }

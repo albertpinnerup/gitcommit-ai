@@ -38,7 +38,7 @@ Usage: commit [--dry-run] [-a | --apply] [-v | --verbose] [--model <m>] [-h | --
   --dry-run        Show the plan and the git commands that would run; change nothing.
   -a, --apply      Skip the review gate and execute the proposed plan.
   -v, --verbose    Add a short body to each commit (default: subject-only, faster).
-  --model <m>      Model for planning (default: sonnet; or set COMMIT_MODEL).
+  --model <m>      Model for planning (default: claude-sonnet-4-6; or set COMMIT_MODEL).
   --demo [name]    Drive the UI with canned fixtures — no tokens, no git.
                    Use "--demo list" to see scenarios. (COMMIT_DEMO_DELAY ms.)
   -h, --help       Show this help.

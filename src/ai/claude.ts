@@ -3,7 +3,10 @@
 import { execFile } from "node:child_process";
 import type { GitResult } from "../types.ts";
 
-export const DEFAULT_MODEL = "sonnet";
+// Pinned model IDs, not tier aliases ("sonnet"): an alias resolves to whatever
+// the installed claude CLI considers current, so behaviour would silently change
+// when the CLI updates. Bump these deliberately when new versions release.
+export const DEFAULT_MODEL = "claude-sonnet-4-6";
 // Reasoning effort dominates latency here: the default (high) reasoning makes a
 // trivial planning call take ~17s; "low" gets the same JSON in ~5s. Override with
 // COMMIT_EFFORT if you want more reasoning for tricky groupings.

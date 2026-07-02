@@ -12,12 +12,20 @@
 //   captureCharFrame()               — returns the current rendered frame as a string
 //   renderOnce()                     — flushes one OpenTUI render pass
 //
-// ESC note: the stdin parser buffers a lone  for 20ms before deciding it
+// ESC note: the stdin parser buffers a lone ESC byte for 20ms before deciding it
 // is a standalone escape (rather than the start of a CSI sequence). We bypass
 // the real-time wait by calling stdinParser.tryForceFlush() immediately after
 // pressEscape(), which sets the parser's forceFlush flag so the next drain()
 // emits the key synchronously. This uses internal APIs via `as any`.
+//
+// act() note: key events fired via mockInput reach useKeyboard handlers through
+// OpenTUI's event system (not React's event system), so React treats them as
+// external updates. Without act(), React's concurrent scheduler defers state
+// updates from those handlers past the renderOnce() call, so the captured frame
+// still shows the pre-press state. Wrapping the key fire in act() flushes
+// React's scheduler synchronously before renderOnce() runs.
 
+import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
 import type { MockInput, TestRendererSetup } from "@opentui/core/testing";
 import type { ReactNode } from "react";
@@ -36,7 +44,12 @@ export async function renderTui(
     },
     async press(...keys: string[]): Promise<void> {
       for (const key of keys) {
-        pressKeyByName(setup.mockInput, key, setup);
+        // Wrap in act() so React's concurrent scheduler processes any state
+        // updates that the useKeyboard handler enqueues before renderOnce()
+        // captures the frame. Without this, the frame reflects pre-press state.
+        await act(async () => {
+          pressKeyByName(setup.mockInput, key, setup);
+        });
         await setup.renderOnce();
       }
     },

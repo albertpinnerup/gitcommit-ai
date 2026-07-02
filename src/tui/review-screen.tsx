@@ -3,10 +3,20 @@
 // in a scrollbox (native scrolling replaces the old height-windowing math),
 // footer legend.
 
+import { useRef, useLayoutEffect } from "react";
+import type { ScrollBoxRenderable } from "@opentui/core";
 import { Banner, shouldShowBanner } from "./banner.tsx";
 import { CommitBlock } from "./commit-block.tsx";
+import { formatCommitMessage } from "../core/message.ts";
 import { theme } from "./theme.ts";
 import type { PlannedCommit, Committed, Settings } from "../types.ts";
+
+// Compute the number of rows a CommitBlock occupies: label + subject + files + body lines.
+function blockRowHeight(commit: PlannedCommit): number {
+  const lines = formatCommitMessage(commit).split("\n");
+  const bodyLines = lines.slice(1).filter((l) => l.trim() !== "");
+  return 3 + bodyLines.length;
+}
 
 // BANNER_ROWS: 6 art rows + 1 row for marginBottom (matches banner.tsx constant).
 const BANNER_ROWS = 7;
@@ -35,6 +45,19 @@ export function ReviewScreen({
   // Give the scrollbox an explicit height so Yoga doesn't squeeze the footer.
   // ascii-font doesn't reliably report its height to Yoga, so we derive it.
   const scrollboxRows = Math.max(1, height - bannerRows - SETTINGS_ROWS - committedRows - LEGEND_ROWS);
+
+  // Scroll-follow: imperatively set scrollTop so the focused commit stays visible.
+  // useLayoutEffect fires synchronously after the React commit, before OpenTUI renders
+  // the frame buffer — so the scroll position is correct in the very next renderOnce().
+  const scrollRef = useRef<ScrollBoxRenderable>(null);
+  useLayoutEffect(() => {
+    if (!scrollRef.current) return;
+    const offset = commits.slice(0, cursor).reduce(
+      (acc, c) => acc + blockRowHeight(c),
+      0,
+    );
+    scrollRef.current.scrollTop = offset;
+  }, [cursor]);
 
   return (
     <box flexDirection="column" height={height}>
@@ -65,7 +88,7 @@ export function ReviewScreen({
           {"✓ committed " + committed.length + ": " + committed.map((c) => c.subject).join(", ")}
         </text>
       )}
-      <scrollbox height={scrollboxRows}>
+      <scrollbox ref={scrollRef} height={scrollboxRows}>
         {commits.map((commit, index) => (
           <CommitBlock key={index} commit={commit} index={index} focused={index === cursor} />
         ))}

@@ -24,6 +24,7 @@ import type {
   OutputStream,
 } from "../types.ts";
 import chalk from "chalk";
+import figlet from "figlet";
 
 const LEGEND_NAV = "↑/↓ move · enter accept · a accept all · s skip · q quit";
 const LEGEND_EDIT =
@@ -102,25 +103,37 @@ export function renderReview(
   { commits, cursor, committed }: RenderReviewState,
   { color = true, width, height, settings }: RenderReviewOptions = {},
 ): string {
-  const { invert, dim, accent, bold } = styles(color);
+  const { invert, dim, bold, paint, banner } = styles(color);
   const clip = (text: string, indent = 0) =>
     clampToWidth(text, width ? width - indent : 0);
 
+  // The title: one array element per terminal row, so clip applies per line
+  // and title.length matches real rows for the height math below.
+  const art = figlet.textSync("AI-commit", {
+    font: "epic",
+    horizontalLayout: "full",
+  });
+  const artRows: string[] = [];
+  for (const row of art.split("\n")) {
+    if (row.trim() === "") continue; // figlet pads with space-only rows
+    artRows.push(clip(row));
+  }
+  let title = banner(artRows);
+  title.push(""); // margin below the title, counted like the rest
+
   const header: string[] = [];
   if (settings) {
-    // Colours are applied only when `color` is on, so piped/test output stays plain.
-    const paint = (text: string, paint: (t: string) => string) =>
-      color ? paint(text) : text;
-
-    const verboseLabel = settings.verbose ? "verbose" : "subject-only";
-    const model = paint(settings.model, chalk.yellow);
-    const effort = paint(settings.effort, chalk.red);
-    const verbose = paint(
-      verboseLabel,
-      settings.verbose ? chalk.green : chalk.magenta,
+    const model = paint(chalk.yellow)(settings.model);
+    const effort = paint(chalk.red)(settings.effort);
+    const verbose = paint(settings.verbose ? chalk.green : chalk.magenta)(
+      settings.verbose ? "verbose" : "subject-only",
     );
-
-    header.push(clip(`${dim("settings:")} ${model} · ${effort} · ${verbose}`));
+    header.push(dim(clip("Settings")));
+    header.push(clip(dim("──────────────────────────────")));
+    header.push(clip(dim("Model:") + " " + model));
+    header.push(clip(dim("Effort:") + " " + effort));
+    header.push(clip(dim("Verbose:") + " " + verbose));
+    header.push(clip(dim("──────────────────────────────")));
   }
   if (committed.length) {
     header.push(
@@ -163,8 +176,15 @@ export function renderReview(
   let hiddenAbove = 0;
   let hiddenBelow = 0;
   if (height && blocks.length > 0) {
-    const available = Math.max(1, height - header.length - footer.length - 2); // -2 for ↑/↓ hints
     const blockHeights = blocks.map((block) => block.length);
+    // The title is decoration: drop it when the terminal is too short to fit
+    // it alongside the header, footer, hints, and the focused commit.
+    const chrome = header.length + footer.length + 2 + blockHeights[cursor];
+    if (title.length + chrome > height) title = [];
+    const available = Math.max(
+      1,
+      height - title.length - header.length - footer.length - 2,
+    ); // -2 for ↑/↓ hints
     let start = cursor;
     let end = cursor + 1;
     let used = blockHeights[cursor];
@@ -185,7 +205,7 @@ export function renderReview(
     hiddenBelow = blocks.length - end;
   }
 
-  const lines = [...header];
+  const lines = [...title, ...header];
   if (hiddenAbove) lines.push(dim(`  ↑ ${hiddenAbove} more`));
   for (const block of visibleBlocks) lines.push(...block);
   if (hiddenBelow) lines.push(dim(`  ↓ ${hiddenBelow} more`));

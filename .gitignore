@@ -4,3 +4,4 @@ node_modules/
 
 # Claude Code worktrees (embedded git repos)
 .claude/worktrees/
+status-cache.json

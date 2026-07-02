@@ -57,7 +57,7 @@ async function runClaudeCli(
     ]);
     return { status, stdout, stderr };
   } catch (error) {
-    return { status: 1, stdout: "", stderr: (error as Error).message };
+    return { status: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
   }
 }
 

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { execute } from '../src/git/commit.ts';
+import { runGit } from '../src/git/run.ts';
 
 function makeRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'gca-exec-'));
@@ -38,4 +39,19 @@ test('execute creates one commit per plan entry with the right files', () => {
   assert.match(show, /b\.txt/);
   assert.doesNotMatch(show, /a\.txt/);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('runGit returns a failed GitResult instead of throwing when git is unreachable', () => {
+  // Manipulate Bun.spawnSync to throw ENOENT (mimics missing binary)
+  const originalSpawnSync = (global as any).Bun.spawnSync;
+  (global as any).Bun.spawnSync = () => {
+    throw new Error('ENOENT: no such file or directory, spawn git');
+  };
+  try {
+    const result = runGit(['status']);
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.length > 0);
+  } finally {
+    (global as any).Bun.spawnSync = originalSpawnSync;
+  }
 });
